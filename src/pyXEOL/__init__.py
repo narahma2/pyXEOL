@@ -1,3 +1,8 @@
-# Read version from installed package
 from importlib.metadata import version
-__version__ = version(__name__)
+
+from pyxeol import misc
+from pyxeol import specfun
+from pyxeol import xeol
+
+
+__version__ = version(__package__)

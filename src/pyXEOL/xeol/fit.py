@@ -17,7 +17,7 @@ from scipy.optimize import curve_fit
 from shutil import rmtree
 from sklearn.metrics import r2_score
 
-from pyXEOL.specfun import (
+from pyxeol.specfun import (
                             baseline_arPLS,
                             df,
                             gauss,
@@ -25,7 +25,7 @@ from pyXEOL.specfun import (
                             gauss_p0_stack,
                             sigma2fwhm,
                             )
-from pyXEOL.misc import create_folder
+from pyxeol.misc import create_folder
 
 
 def process_stack_dask(in_fld, wavelengths, out_fld, fit=True, wl_crop=200):
