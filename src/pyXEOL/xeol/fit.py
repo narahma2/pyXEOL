@@ -28,7 +28,7 @@ from pyxeol.specfun import (
 from pyxeol.misc import create_folder
 
 
-def process_stack_dask(in_fld, wavelengths, out_fld, fit=True, wl_crop=200):
+def process_stack_dask(in_fld, wavelengths, out_fld, fit=True, wl_crop=None):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
 
@@ -167,7 +167,8 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
                                 )['array_data'].data.astype(np.float32)
 
     # Crop down images
-    raw = raw[:,:,wl_crop:-wl_crop]
+    if wl_crop is not None:
+        raw = raw[:,:,wl_crop:-wl_crop]
 
     # Baseline (scalar subtraction)
     bl = da.median(raw[:,:100,:100], axis=(1,2))
