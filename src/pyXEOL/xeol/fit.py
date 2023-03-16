@@ -28,7 +28,14 @@ from pyxeol.specfun import (
 from pyxeol.misc import create_folder
 
 
-def process_stack_dask(in_fld, wavelengths, out_fld, fit=True, wl_crop=None):
+def process_stack_dask(
+                       in_fld,
+                       wavelengths,
+                       out_fld,
+                       load=True,
+                       fit=True,
+                       wl_crop=None
+                       ):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
 
@@ -53,12 +60,14 @@ def process_stack_dask(in_fld, wavelengths, out_fld, fit=True, wl_crop=None):
     print(f'{in_fld.split("/")[-1]} processing...')
     if fit:
         print('[0/7] Initiating...')
-        _pipeline_image2spec(fn, im, zfp, wavelengths, 7, wl_crop)
-        _pipeline_specfit(zfp)
+        if load:
+            _pipeline_image2spec(fn, im, zfp, wavelengths, 7, wl_crop)
+            _pipeline_specfit(zfp)
     else:
         print('[0/3] Initiating...')
-        _pipeline_image2spec(fn, im, zfp, wavelengths, 3, wl_crop)
-        _clear_stdout(2)
+        if load:
+            _pipeline_image2spec(fn, im, zfp, wavelengths, 3, wl_crop)
+            _clear_stdout(2)
 
     _update_stdout(f'{in_fld.split("/")[-1]} finished!')
 
@@ -165,6 +174,10 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
                                 engine='scipy',
                                 parallel=True,
                                 )['array_data'].data.astype(np.float32)
+
+    # Re-chunk if needed (for data saved as lines instead of as points)
+    if raw.chunksize[0] != 1:
+        raw = raw.rechunk((1, -1, -1))
 
     # Crop down images
     if wl_crop is not None:
