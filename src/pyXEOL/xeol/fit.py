@@ -32,12 +32,17 @@ def process_stack_dask(
                        in_fld,
                        wavelengths,
                        out_fld,
+                       dtype='points',
                        load=True,
                        fit=True,
                        wl_crop=None
                        ):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
+
+    # Continue if no files were loaded
+    if not bool(fn):
+        return 0
 
     if '.tif' not in fn[0]:
         im = None
@@ -46,10 +51,6 @@ def process_stack_dask(
     else:
         im = f'{in_fld}/*.tif'
         fn = glob(f'{in_fld}/*.tif')
-
-    # Continue if no files were loaded
-    if not bool(fn):
-        return 0
 
     # Delete output if it exists
     zfp = f'{out_fld}'
