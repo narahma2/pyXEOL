@@ -204,15 +204,15 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
     # Save output
     _update_stdout(f'[3/{steps}] Saving processed images...')
     names = [x.split('/')[-1].split('.')[0] for x in fn]
-    nums = [int(x.split('_')[-1]) for x in names]
     data_vars = {
                  'folder': fn[0].split('/')[-2],
-                 'files': (['t'], names),
+                 'files': names,
                  }
-    coords = dict(t=nums)
-    out1 = xr.Dataset(data_vars=data_vars, coords=coords)
+    #coords = dict(t=nums)
+    out1 = xr.Dataset(data_vars=data_vars)
     out1.to_zarr(zfp, mode='w', group='/')
 
+    nums = np.arange(0, ds.shape[0])
     data_vars = {
                  'bg': (['x'], bg),
                  'data': (['t', 'x'], ds),

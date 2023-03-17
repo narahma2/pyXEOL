@@ -2,11 +2,11 @@ import numpy as np
 import xarray as xr
 
 
-def map_fit(zfp):
+def map_fit(zfp, height, width):
     zs = xr.open_zarr(zfp, group='xeol/fit')
 
     # Extract parameters and reshape into a 2D map
-    shape = np.repeat(int(np.sqrt(zs['params'].shape[0])), 2)
+    shape = (height, width)
     x0 = zs['params'][:,0].data.reshape(shape)
     y0 = zs['params'][:,1].data.reshape(shape)
     sigma = zs['params'][:,2].data.reshape(shape)
@@ -27,11 +27,11 @@ def map_fit(zfp):
     return
 
 
-def map_sumInt(zfp, lb, ub):
+def map_sumInt(zfp, lb, ub, height, width):
     zs = xr.open_zarr(zfp, group='xeol')
 
     # Extract parameters and reshape into a 2D map as needed
-    shape = np.repeat(int(np.sqrt(zs['data'].shape[0])), 2)
+    shape = (height, width)
     spectra = zs['data']
     t = zs['t'].data.reshape(shape)
 
@@ -51,5 +51,35 @@ def map_sumInt(zfp, lb, ub):
 
     # Save output
     out.to_zarr(zfp, mode='w', group='maps/sumInt')
+
+    return
+
+
+def map_stats(zfp, height, width):
+    zs = xr.open_zarr(zfp, group='xeol')
+
+    # Extract parameters and reshape into a 2D map as needed
+    shape = (height, width)
+    spectra = zs['data']
+    t = zs['t'].data.reshape(shape)
+
+    # Calculate peaks and reshape
+    peaks = zs['data'].max(dim='x').values
+    peaks2D = peaks.reshape(shape)
+
+    # Calculate peak centers and reshape
+    centers = zs['data'].argmax(dim='x').values
+    centers2D = centers.reshape(shape)
+
+    # Create new dataset
+    data_vars = {
+                 f'peaks': (['tx', 'ty'], peaks2D),
+                 f'peakCenters': (['tx', 'ty'], centers2D),
+                 }
+    coords = {'t': (['tx', 'ty'], t)}
+    out = xr.Dataset(data_vars=data_vars, coords=coords)
+
+    # Save output
+    out.to_zarr(zfp, mode='w', group='maps/stats')
 
     return
