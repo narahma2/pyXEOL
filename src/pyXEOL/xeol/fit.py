@@ -75,12 +75,23 @@ def process_stack_dask(
     return 1
 
 
-def process_single(fp, wavelengths, bg_corr=False, wl_crop=None, plot=True):
+def process_single(
+                   fp,
+                   wavelengths,
+                   x=None,
+                   bg_corr=False,
+                   wl_crop=None,
+                   plot=True
+                   ):
     if '.tif' in fp:
         raw2D = np.array(Image.open(fp)).astype(np.float32)
     else:
         raw2D = xr.open_dataset(fp)['array_data'].data.astype(np.float32)
         raw2D = raw2D.squeeze()
+
+    # Select X point (for data saved as lines)
+    if x is not None:
+        raw2D = raw2D[x,:,:].squeeze()
 
     # Crop down images
     if wl_crop is not None:
