@@ -81,7 +81,8 @@ def process_single(
                    x=None,
                    bg_corr=False,
                    wl_crop=None,
-                   plot=True
+                   plot=True,
+                   figsize=None
                    ):
     if '.tif' in fp:
         raw2D = np.array(Image.open(fp)).astype(np.float32)
@@ -125,10 +126,13 @@ def process_single(
 
     # Plot results (if requested)
     if plot:
+        if figsize is not None:
+            figsize = (12, 12)
+
         vmin = np.percentile(raw2D, 1)
         vmax=  np.percentile(raw2D, 99)
 
-        fig, ax = plt.subplots(2, 1)
+        fig, ax = plt.subplots(2, 1, figsize=figsize)
         im = ax[0].imshow(
                           raw2D,
                           vmin=vmin, vmax=vmax,
