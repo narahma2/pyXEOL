@@ -12,10 +12,21 @@ import matplotlib.lines as mlines
 from matplotlib import pyplot as plt
 from PIL import Image
 from scipy.signal import find_peaks
-from sklearn.metrics import (
-                             mean_squared_error as mse,
-                             r2_score
-                             )
+from sklearn.metrics import mean_squared_error as mse
+
+
+# Peaks for the HG-2 calibration light source
+hg2_peaks = np.array([
+                      253.652, 296.728, 302.150, 313.155, 334.148, 365.015,
+                      404.656, 407.783, 435.833, 546.074, 576.960, 579.066,
+                      696.543, 706.722, 714.704, 727.294, 738.398, 750.387,
+                      763.511, 772.376, 794.818, 800.616, 811.531, 826.452,
+                      842.465, 852.144, 866.794, 912.297, 922.450
+                      ])
+
+
+def _rmse(true, pred):
+    return np.sqrt(mse(true, pred))
 
 
 def _train_data(peaks, refs):
@@ -26,11 +37,11 @@ def _train_data(peaks, refs):
     return z, xval_nm
 
 
-def _train_acc(peaks, refs):
+def _train_err(peaks, refs):
     z, xval = _train_data(peaks, refs)
-    acc = r2_score(refs, xval[peaks])
+    err = _rmse(refs, xval[peaks])
 
-    return acc, z
+    return err, z
 
 
 def _find_set(peaks, refs):
@@ -45,7 +56,7 @@ def _find_set(peaks, refs):
     return closest_peaks
 
 
-def _process(fp, lines, gratings, prom, r2):
+def _process(fp, lines, gratings, prom, threshold):
     # Number of datasets
     nsets = len(gratings)
 
@@ -56,13 +67,6 @@ def _process(fp, lines, gratings, prom, r2):
                      ])
     npeaks = [len(x) for x in peaks]
 
-    hg2_peaks = np.array([
-                          253.652, 296.728, 302.150, 313.155, 334.148, 365.015,
-                          404.656, 407.783, 435.833, 546.074, 576.960, 579.066,
-                          696.543, 706.722, 714.704, 727.294, 738.398, 750.387,
-                          763.511, 772.376, 794.818, 800.616, 811.531, 826.452,
-                          842.465, 852.144, 866.794, 912.297, 922.450
-                          ])
     train_inds = np.arange(nsets).tolist()
 
     train_ref_best = [None] * nsets
@@ -72,6 +76,9 @@ def _process(fp, lines, gratings, prom, r2):
 
     # Window to use for peak cropping
     winSize = 300
+
+    # Indices of training data sets (used for cropping bad fits later)
+    use_inds = np.arange(0, nsets, 1).tolist()
 
     for j, train_ind in enumerate(train_inds):
         train_peaks = peaks[train_ind]
@@ -88,15 +95,15 @@ def _process(fp, lines, gratings, prom, r2):
         # Run all combinations for the training set
         start = time.time()
         for combo in itertools.combinations(ref_peaks, npeaks[train_ind]):
-            acc, z = _train_acc(peaks[train_ind], combo)
+            err, z = _train_err(peaks[train_ind], combo)
 
-            if acc > r2:
+            if err < threshold:
                 poly.append(z)
                 train_ref.append(combo)
 
         # Indices to use for testing
         test_inds = list(set(np.arange(nsets)) - set([train_ind]))
-        test_r2 = [None] * (nsets-1)
+        test_err = [None] * (nsets-1)
 
         # Test out the trained fits on the other datasets
         for i, test_ind in enumerate(test_inds):
@@ -110,42 +117,54 @@ def _process(fp, lines, gratings, prom, r2):
                                  )
             ref_peaks = hg2_peaks[ind]
 
-            # Calculate R^2 for each of the best trained models
-            test_r2[i] = []
+            # Calculate error for each of the best trained models
+            test_err[i] = []
             for p in poly:
                 test_peaks = np.polyval(p, peaks[test_ind]) + offset
                 test_peaks_closest = _find_set(test_peaks, ref_peaks)
-                test_r2[i].append(r2_score(test_peaks_closest, test_peaks))
-
-        elapsed = time.time() - start
-        print(f'{fp[j].split("/")[-1]} finished: {elapsed/60:0.2f} min')
+                test_err[i].append(_rmse(test_peaks_closest, test_peaks))
 
         # Only use the training models that work for all testing sets
-        test_r2 = np.array(test_r2)
-        good_r2 = np.prod(test_r2 > r2, axis=0)
-        good_r2_ind = np.nonzero(good_r2)[0]
+        test_err = np.array(test_err)
+        good_err = np.prod(test_err < threshold, axis=0)
+        good_ind = np.nonzero(good_err)[0]
 
-        # Index of best training model
-        best_ind = good_r2_ind[test_r2[:, good_r2_ind].mean(axis=0).argmax()]
+        # Populate only if fit is possible
+        if len(good_ind) > 0:
+            # Index of best training model
+            best_ind = good_ind[test_err[:, good_ind].mean(axis=0).argmin()]
 
-        # Get best training reference peaks and fits
-        train_ref_best[j] = train_ref[best_ind]
-        poly_best[j] = poly[best_ind]
-        xval_nm[j] = np.polyval(poly_best[j], np.arange(1600))
+            # Get best training reference peaks and fits
+            train_ref_best[j] = train_ref[best_ind]
+            poly_best[j] = poly[best_ind]
+            xval_nm[j] = np.polyval(poly_best[j], np.arange(1600))
 
-        # Calculate final training RMSE
-        train_mse = mse(train_ref_best[j], xval_nm[j][peaks[train_ind]])
-        train_rmse[j] = np.sqrt(train_mse)
+            # Calculate final training RMSE
+            train_rmse[j] = _rmse(
+                                  train_ref_best[j],
+                                  xval_nm[j][peaks[train_ind]]
+                                  )
+
+            elapsed = time.time() - start
+            print(f'{fp[j].split("/")[-1]} finished: {elapsed/60:0.2f} min')
+        else:
+            print(f'{fp[j].split("/")[-1]} thrown out (could not fit)')
+            train_ref_best[j] = None
+            poly_best[j] = None
+            xval_nm[j] = None
+            train_rmse[j] = None
+            use_inds.remove(j)
 
     # Package output
     out = {
-           'Files': fp,
-           'Grating': gratings,
-           'Peaks/px': [x.tolist() for x in peaks],
-           'Reference/nm': train_ref_best,
-           'polyfit': [x.tolist() for x in poly_best],
-           'xval/nm': [x.tolist() for x in xval_nm],
-           'RMSE': train_rmse
+           'Files': np.array(fp)[use_inds].tolist(),
+           'Grating': np.array(gratings)[use_inds].tolist(),
+           'Peaks/px': [x.tolist() for x in peaks if x is not None],
+           'Reference/nm': np.array(train_ref_best, dtype=object)
+                           [use_inds].tolist(),
+           'polyfit': [x.tolist() for x in poly_best if x is not None],
+           'xval/nm': [x.tolist() for x in xval_nm if x is not None],
+           'RMSE': np.array(train_rmse)[use_inds].tolist()
            }
 
     return out
@@ -154,6 +173,14 @@ def _process(fp, lines, gratings, prom, r2):
 def _plot_calib(calib, lines):
     # Number of datasets
     nsets = len(calib['Grating'])
+
+    # Colors
+    cdata = 'black'
+    cpeaks = 'hotpink'
+    cfit = 'grey'
+    corder1 = 'lightcoral'
+    corder2 = 'limegreen'
+    corder3 = 'cornflowerblue'
 
     fig, ax = plt.subplots(nsets, 1, figsize=(8, nsets*1.4))
     plt.subplots_adjust(
@@ -164,51 +191,95 @@ def _plot_calib(calib, lines):
 
     for i, a in enumerate(ax):
         # Visualize spectra
-        a.plot(calib['xval/nm'][i], lines[i], color='k', alpha=0.6)
+        a.plot(calib['xval/nm'][i], lines[i], color=cdata, alpha=1, zorder=99)
 
         # Visualize peaks
         [
          a.plot(
                 np.array(calib['xval/nm'][i])[calib['Peaks/px'][i]],
                 lines[i][calib['Peaks/px'][i]],
-                color='b',
+                color=cpeaks,
                 linestyle='',
                 marker='x',
                 )
          for x in calib['Reference/nm'][i]
          ]
 
+        # Get current xlim
+        xlim = a.get_xlim()
+
         # Visualize fits
         [
          a.axvline(
                    x,
-                   color='r',
-                   alpha=0.5,
+                   color=fit,
+                   alpha=1,
                    linestyle='--',
+                   zorder=1
                    )
          for x in calib['Reference/nm'][i]
          ]
 
+        # Visualize unused first/second/third order peaks
+        for p in hg2_peaks:
+            if p in calib['Reference/nm'][i]:
+                continue
+
+            if np.logical_and(1*p > xlim[0], 1*p < xlim[1]):
+                a.axvline(1*p, color=corder1, ls='--', alpha=0.8, zorder=0)
+
+            if np.logical_and(2*p > xlim[0], 2*p < xlim[1]):
+                a.axvline(2*p, color=corder2, ls='-.', alpha=0.8, zorder=0)
+
+            if np.logical_and(3*p > xlim[0], 3*p < xlim[1]):
+                a.axvline(3*p, color=corder3, ls=':', alpha=0.8, zorder=0)
+
         grating = calib['Grating'][i]
         rmse = calib['RMSE'][i]
         a.set_title(f'Grating = {grating} nm: RMSE = {rmse:0.3f} nm')
+        a.set_xlim(xlim)
 
     # Create legend using dummy items
-    blue_cross = mlines.Line2D(
-                               [], [],
-                               color='b',
-                               marker='x',
-                               linestyle='None',
-                               label='Found peaks'
-                               )
-    red_line = mlines.Line2D(
+    cross = mlines.Line2D(
+                          [], [],
+                          color=cpeaks,
+                          marker='x',
+                          linestyle='None',
+                          label='Measured peaks'
+                          )
+    lineUsed = mlines.Line2D(
                              [], [],
-                             color='r',
+                             color=cfit,
                              linestyle='--',
-                             alpha=0.5,
+                             alpha=1,
                              label='Fitted peaks'
                              )
-    ax[0].legend(handles=[blue_cross, red_line])
+    line1 = mlines.Line2D(
+                          [], [],
+                          color=corder1,
+                          linestyle='--',
+                          alpha=1,
+                          label='1$^{st}$ order (unused)'
+                          )
+    line2 = mlines.Line2D(
+                          [], [],
+                          color=corder2,
+                          linestyle='-.',
+                          alpha=1,
+                          label='2$^{nd}$ order (unused)'
+                          )
+    line3 = mlines.Line2D(
+                          [], [],
+                          color=corder3,
+                          linestyle=':',
+                          alpha=1,
+                          label='3$^{rd}$ order (unused)'
+                          )
+    ax[0].legend(
+                 handles=[cross, lineUsed, line1, line2, line3],
+                 fontsize='x-small',
+                 ncols=2
+                 )
 
     # X axis label
     ax[-1].set_xlabel('Wavelength (nm)')
@@ -228,12 +299,12 @@ def autocalibrate(
                   lines,
                   gratings,
                   prom=500,
-                  r2=0.9,
+                  threshold=3,
                   save_fld=None,
                   plot=False
                   ):
     # Run calibration
-    calib = _process(fp, lines, gratings, prom, r2)
+    calib = _process(fp, lines, gratings, prom, threshold)
 
     # Save data (make sure output directory exists!)
     if save_fld is not None:
