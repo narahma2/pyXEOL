@@ -6,13 +6,21 @@ import numpy as np
 import os
 import sys
 import time
+import warnings
 
 from glob import glob
 import matplotlib.lines as mlines
 from matplotlib import pyplot as plt
 from PIL import Image
 from scipy.signal import find_peaks
+from sklearn.exceptions import UndefinedMetricWarning
+from sklearn.linear_model import (
+                                  LinearRegression,
+                                  RANSACRegressor
+                                  )
 from sklearn.metrics import mean_squared_error as mse
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
 
 
 # Peaks for the HG-2 calibration light source
@@ -25,8 +33,90 @@ hg2_peaks = np.array([
                       ])
 
 
-def _rmse(true, pred):
-    return np.sqrt(mse(true, pred))
+def _fit_linear(peaks_px, position, grating=600, detector='newton971'):
+    # Spectral dispersion based on grating used (nm/mm)
+    if grating == 300:
+        spec_disp = 10.12
+    elif grating == 600:
+        spec_disp = 4.94
+    else:
+        error('Only 300 gr/mm and 600 gr/mm configured for now!')
+
+    if detector == 'newton971':
+        # Detector pixel size (mm/px)
+        det_size = 16E-3
+
+        # Number of columns (px)
+        det_cols = 1600
+    else:
+        error('Only Andor Newton EMCCD 971 configured for now!')
+
+    # Spectral resolution (nm/px)
+    spec_res = spec_disp * det_size
+
+    # Approximate the X-axis wavelength values (nm)
+    xaxis = (spec_res * np.arange(-det_cols/2, det_cols/2)) + position
+
+    # Approximate peak positions (nm)
+    peaks_nm = xaxis[peaks_px]
+
+    return peaks_nm
+
+
+def _remove_outlier_peaks(peaks, positions, winSize, threshold):
+    # Number of datasets
+    nsets = len(positions)
+    train_inds = np.arange(nsets).tolist()
+
+    # Initialize peaks list (w/o redundancies)
+    use_peaks = [None] * len(peaks)
+
+    # Remove redundancies
+    for j in train_inds:
+        # Crop down HG2 peak list (using 270 nm spectral dispersion over CCD)
+        ind = np.logical_and(
+                             hg2_peaks > (positions[j] - winSize/2),
+                             hg2_peaks < (positions[j] + winSize/2)
+                             )
+        ref_peaks = hg2_peaks[ind]
+
+        # Get first order approximation
+        peaks_nm_lin = _fit_linear(peaks[j], positions[j])
+
+        # Closest reference peaks
+        ref_closest = np.array([
+                                ref_peaks[np.argmin(abs(x-ref_peaks))]
+                                for x in peaks_nm_lin
+                                ])
+
+        # Initialize quadratic model for RANSAC
+        ransac_model = make_pipeline(
+                                     PolynomialFeatures(degree=2),
+                                     LinearRegression()
+                                     )
+        # Minimum number of samples
+        min_samples = np.unique(ref_closest, return_counts=True)[1].max()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=UndefinedMetricWarning)
+            ransac = RANSACRegressor(
+                                     ransac_model,
+                                     min_samples=min_samples,
+                                     residual_threshold=threshold,
+                                     stop_probability=0.999
+                                     )
+            ransac.fit(peaks[j].reshape(-1,1), ref_closest);
+
+        use_peaks[j] = peaks[j][ransac.inlier_mask_]
+
+    return use_peaks
+
+
+def _train_err(peaks, refs):
+    z, xval = _train_data(peaks, refs)
+    err = _rmse(refs, xval[peaks])
+
+    return err, z
 
 
 def _train_data(peaks, refs):
@@ -37,11 +127,8 @@ def _train_data(peaks, refs):
     return z, xval_nm
 
 
-def _train_err(peaks, refs):
-    z, xval = _train_data(peaks, refs)
-    err = _rmse(refs, xval[peaks])
-
-    return err, z
+def _rmse(true, pred):
+    return np.sqrt(mse(true, pred))
 
 
 def _find_set(peaks, refs):
@@ -56,123 +143,128 @@ def _find_set(peaks, refs):
     return closest_peaks
 
 
-def _process(fp, lines, gratings, prom, threshold):
-    # Number of datasets
-    nsets = len(gratings)
-
+def _process(fp, lines, positions, prom, thresholds, grating, detector):
     # Get peak pixel positions from each data set
     peaks, _ = zip(*[
-                     find_peaks(x, distance=20, prominence=prom)
+                     find_peaks(x, distance=10, prominence=prom)
                      for x in lines
                      ])
-    npeaks = [len(x) for x in peaks]
 
+    # Window to use for peak cropping
+    winSize = 300
+
+    # Crop down the peak list to remove any outliers
+    use_peaks = _remove_outlier_peaks(peaks, positions, winSize, thresholds[0])
+
+    # Number of peaks found
+    npeaks = [len(x) for x in use_peaks]
+
+    # Initialize lists
+    nsets = len(positions)
     train_inds = np.arange(nsets).tolist()
-
     train_ref_best = [None] * nsets
     poly_best = [None] * nsets
     xval_nm = [None] * nsets
     train_rmse = [None] * nsets
 
-    # Window to use for peak cropping
-    winSize = 300
+    # Indices of training data sets (used for removing bad fits)
+    keep_set = np.arange(0, nsets, 1).tolist()
 
-    # Indices of training data sets (used for cropping bad fits later)
-    use_inds = np.arange(0, nsets, 1).tolist()
+    for j in train_inds:
+        # Make sure there are enough peaks
+        if npeaks[j] < 5:
+            print(f'{fp[j].split("/")[-1]} thrown out (less than 5 peaks)')
+            keep_set.remove(j)
+            continue
 
-    for j, train_ind in enumerate(train_inds):
-        train_peaks = peaks[train_ind]
+        # Initialize lists
+        train_peaks = use_peaks[j]
         poly = []
         train_ref = []
 
         # Crop down HG2 peak list (using 270 nm spectral dispersion over CCD)
         ind = np.logical_and(
-                             hg2_peaks > (gratings[train_ind] - winSize/2),
-                             hg2_peaks < (gratings[train_ind] + winSize/2)
+                             hg2_peaks > (positions[j] - winSize/2),
+                             hg2_peaks < (positions[j] + winSize/2)
                              )
         ref_peaks = hg2_peaks[ind]
 
         # Run all combinations for the training set
         start = time.time()
-        for combo in itertools.combinations(ref_peaks, npeaks[train_ind]):
-            err, z = _train_err(peaks[train_ind], combo)
+        for combo in itertools.combinations(ref_peaks, npeaks[j]):
+            err, z = _train_err(use_peaks[j], combo)
 
-            if err < threshold:
+            if err < thresholds[1]:
                 poly.append(z)
                 train_ref.append(combo)
 
         # Indices to use for testing
-        test_inds = list(set(np.arange(nsets)) - set([train_ind]))
+        test_inds = list(set(np.arange(nsets)) - set([j]))
         test_err = [None] * (nsets-1)
 
         # Test out the trained fits on the other datasets
         for i, test_ind in enumerate(test_inds):
             # Get offset for the different grating position
-            offset = gratings[test_ind] - gratings[train_ind]
+            offset = positions[test_ind] - positions[j]
 
             # Crop down HG2 peak list
             ind = np.logical_and(
-                                 hg2_peaks > (gratings[test_ind] - winSize/2),
-                                 hg2_peaks < (gratings[test_ind] + winSize/2)
+                                 hg2_peaks > (positions[test_ind] - winSize/2),
+                                 hg2_peaks < (positions[test_ind] + winSize/2)
                                  )
             ref_peaks = hg2_peaks[ind]
 
             # Calculate error for each of the best trained models
             test_err[i] = []
             for p in poly:
-                test_peaks = np.polyval(p, peaks[test_ind]) + offset
+                test_peaks = np.polyval(p, use_peaks[test_ind]) + offset
                 test_peaks_closest = _find_set(test_peaks, ref_peaks)
                 test_err[i].append(_rmse(test_peaks_closest, test_peaks))
 
         # Only use the training models that work for all testing sets
         test_err = np.array(test_err)
-        good_err = np.prod(test_err < threshold, axis=0)
-        good_ind = np.nonzero(good_err)[0]
 
-        # Populate only if fit is possible
-        if len(good_ind) > 0:
-            # Index of best training model
-            best_ind = good_ind[test_err[:, good_ind].mean(axis=0).argmin()]
-
-            # Get best training reference peaks and fits
-            train_ref_best[j] = train_ref[best_ind]
-            poly_best[j] = poly[best_ind]
-            xval_nm[j] = np.polyval(poly_best[j], np.arange(1600))
-
-            # Calculate final training RMSE
-            train_rmse[j] = _rmse(
-                                  train_ref_best[j],
-                                  xval_nm[j][peaks[train_ind]]
-                                  )
-
-            elapsed = time.time() - start
-            print(f'{fp[j].split("/")[-1]} finished: {elapsed/60:0.2f} min')
-        else:
+        # Find best model if it exists
+        try:
+            best_ind = np.sum(test_err, axis=0).argmin()
+        except:
             print(f'{fp[j].split("/")[-1]} thrown out (could not fit)')
-            train_ref_best[j] = None
-            poly_best[j] = None
-            xval_nm[j] = None
-            train_rmse[j] = None
-            use_inds.remove(j)
+            keep_set.remove(j)
+            continue
+
+        # Get best training reference peaks and fits
+        train_ref_best[j] = train_ref[best_ind]
+        poly_best[j] = poly[best_ind]
+        xval_nm[j] = np.polyval(poly_best[j], np.arange(1600))
+
+        # Calculate final training RMSE
+        train_rmse[j] = _rmse(
+                              train_ref_best[j],
+                              xval_nm[j][use_peaks[j]]
+                              )
+        elapsed = time.time() - start
+        print(f'{fp[j].split("/")[-1]} finished: {elapsed/60:0.2f} min')
 
     # Package output
     out = {
-           'Files': np.array(fp)[use_inds].tolist(),
-           'Grating': np.array(gratings)[use_inds].tolist(),
-           'Peaks/px': [x.tolist() for x in peaks if x is not None],
+           'Files': np.array(fp)[keep_set].tolist(),
+           'Position': np.array(positions)[keep_set].tolist(),
+           'Peaks/px': [use_peaks[x].tolist() for x in keep_set],
            'Reference/nm': np.array(train_ref_best, dtype=object)
-                           [use_inds].tolist(),
-           'polyfit': [x.tolist() for x in poly_best if x is not None],
-           'xval/nm': [x.tolist() for x in xval_nm if x is not None],
-           'RMSE': np.array(train_rmse)[use_inds].tolist()
+                           [keep_set].tolist(),
+           'polyfit': [poly_best[x].tolist() for x in keep_set],
+           'xval/nm': [xval_nm[x].tolist() for x in keep_set],
+           'RMSE': np.array(train_rmse)[keep_set].tolist(),
+           'Grating': grating,
+           'Detector': detector
            }
 
-    return out
+    return out, np.array(lines)[keep_set]
 
 
 def _plot_calib(calib, lines):
     # Number of datasets
-    nsets = len(calib['Grating'])
+    nsets = len(calib['Position'])
 
     # Colors
     cdata = 'black'
@@ -212,7 +304,7 @@ def _plot_calib(calib, lines):
         [
          a.axvline(
                    x,
-                   color=fit,
+                   color=cfit,
                    alpha=1,
                    linestyle='--',
                    zorder=1
@@ -234,9 +326,9 @@ def _plot_calib(calib, lines):
             if np.logical_and(3*p > xlim[0], 3*p < xlim[1]):
                 a.axvline(3*p, color=corder3, ls=':', alpha=0.8, zorder=0)
 
-        grating = calib['Grating'][i]
+        position = calib['Position'][i]
         rmse = calib['RMSE'][i]
-        a.set_title(f'Grating = {grating} nm: RMSE = {rmse:0.3f} nm')
+        a.set_title(f'Position = {position} nm: RMSE = {rmse:0.3f} nm')
         a.set_xlim(xlim)
 
     # Create legend using dummy items
@@ -287,8 +379,8 @@ def _plot_calib(calib, lines):
     plt.show()
 
 
-def _save(calib, save_fld):
-    with open(f'{save_fld}/xeol_calibration.json', 'w') as handle:
+def _save(calib, save_fld, save_name):
+    with open(f'{save_fld}/{save_name}.json', 'w') as handle:
         json.dump(calib, handle, indent=4)
 
     return
@@ -297,19 +389,34 @@ def _save(calib, save_fld):
 def autocalibrate(
                   fp,
                   lines,
-                  gratings,
+                  positions,
                   prom=500,
-                  threshold=3,
+                  thresholds=(0.1, 5),
                   save_fld=None,
-                  plot=False
+                  save_name='xeol_calibration',
+                  plot=False,
+                  grating=600,
+                  detector='newton971'
                   ):
+    # Check thresholds input
+    if len(thresholds) == 1:
+        thresholds = np.repeat(thresholds, 2)
+
     # Run calibration
-    calib = _process(fp, lines, gratings, prom, threshold)
+    calib, lines = _process(
+                            fp,
+                            lines,
+                            positions,
+                            prom,
+                            thresholds,
+                            grating,
+                            detector
+                            )
 
     # Save data (make sure output directory exists!)
     if save_fld is not None:
         if os.path.isdir(save_fld):
-            _save(calib, save_fld)
+            _save(calib, save_fld, save_name)
         else:
             print(f'Create {save_fld} and then re-run this!')
 
@@ -320,16 +427,16 @@ def autocalibrate(
     return calib
 
 
-def apply_calibration(calib_fp, grating):
+def apply_calibration(calib_fp, position):
     # Load in calibration data
     with open(calib_fp, 'r') as handle:
         calib = json.load(handle)
 
-    # Get closest grating
-    ind = np.argmin(abs(np.array(calib['Grating']) - grating))
+    # Get closest position
+    ind = np.argmin(abs(np.array(calib['Position']) - position))
 
     # Get offset
-    offset = grating - calib['Grating'][ind]
+    offset = position - calib['Position'][ind]
 
     # Calculate wavelengths
     wavelengths = np.polyval(calib['polyfit'][ind], np.arange(0, 1600, 1))
