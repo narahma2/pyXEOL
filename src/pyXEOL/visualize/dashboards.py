@@ -16,6 +16,7 @@ from pyxeol.specfun import gauss, gauss2
 class XEOL2D(param.Parameterized):
     """Dashboard for comparing XEOL 2D maps and measured spectrum."""
     # Setup parameters
+    select_zfp = param.Selector(default='', objects=[])
     select_map = param.Selector(default='', objects=[])
     select_vars = param.Selector(default='', objects=[])
     clim_vals = param.Range(default=(0, 100), bounds=(0, 100))
@@ -28,37 +29,40 @@ class XEOL2D(param.Parameterized):
         # cryptic-error-message-on-using-parameterized-class-in-panel/1932/3
         super().__init__(**params)
 
-        # Set the Zarr store
-        self.zfp = zfp
+        # Set the Zarr store paths
+        self.param['select_zfp'].objects = zfp
 
         # Get all map types
-        map_types = glob(f'{zfp}/maps/*')
+        map_types = glob(f'{zfp[0]}/maps/*')
         self.map_groups = [x.split('maps/')[-1] for x in map_types]
         self.param['select_map'].objects = self.map_groups
 
         # Get all fit types
-        fit_types = glob(f'{zfp}/xeol/fit_*')
+        fit_types = glob(f'{zfp[0]}/xeol/fit_*')
         self.fit_groups = [x.split('xeol/')[-1] for x in fit_types]
 
         # Load in the variables
         self.map_vars = {
-                         x: list(xr.open_zarr(zfp, group=f'maps/{x}').keys())
+                         x: list(xr.open_zarr(
+                                              zfp[0],
+                                              group=f'maps/{x}').keys()
+                                              )
                          for x in self.map_groups
                          }
         self.param['select_vars'].objects = self.map_vars[self.map_groups[0]]
 
         # Load spectra
-        self.spectra = xr.open_zarr(zfp, group='xeol')['data']
+        self.spectra = xr.open_zarr(zfp[0], group='xeol')['data']
 
-        # Get the 2D coordinates (should all be the same)
+        # Get the 2D coordinates (should all be the same for each map)
         self.t = xr.open_zarr(
-                              zfp,
+                              zfp[0],
                               group=f'maps/{self.map_groups[0]}'
                               )['t'].load()
 
         # Load in dataset
         self.ds = xr.open_zarr(
-                               self.zfp,
+                               zfp[0],
                                group=f'maps/{self.map_groups[0]}'
                                ).load()
 
@@ -66,31 +70,58 @@ class XEOL2D(param.Parameterized):
         self.im = self.ds[self.map_vars[self.map_groups[0]][0]]
 
         # Update params
+        self.select_zfp = self.param['select_zfp'].objects[0]
         self.select_map = self.param['select_map'].objects[0]
-        #self.select_vars = self.param['select_vars'].objects[0]
 
         # Setup initial map
-        self.dmap_map = hv.DynamicMap(self._plot_map)
+        self.dmap_map = hv.DynamicMap(self._plot_map).opts(framewise=True)
         self.tap = hv.streams.Tap(source=self.dmap_map, x=self.x, y=self.y)
         self.dmap_spec = hv.DynamicMap(self._plot_spectrum, streams=[self.tap])
 
 
+    @param.depends('select_zfp', watch=True)
+    def _update_zfp(self):
+        # Load spectra
+        self.spectra = xr.open_zarr(self.select_zfp, group='xeol')['data']
+
+        # Load maps
+        map_types = glob(f'{self.select_zfp}/maps/*')
+        self.map_groups = [x.split('maps/')[-1] for x in map_types]
+
+        # Get the 2D coordinates (should all be the same for each map)
+        self.t = xr.open_zarr(
+                              self.select_zfp,
+                              group=f'maps/{self.map_groups[0]}'
+                              )['t'].load()
+
+        # Open dataset
+        self.ds = xr.open_zarr(
+                               self.select_zfp,
+                               group=f'maps/{self.map_groups[0]}'
+                               ).load()
+
+        self.param['select_map'].objects = self.map_groups
+        self.select_map = self.map_groups[0]
+
+        # Load in image
+        self.im = self.ds[self.map_vars[self.map_groups[0]][0]]
+
 
     @param.depends('select_map', watch=True)
-    def _update_vars(self):
+    def _update_map(self):
         use_vars = self.map_vars[self.select_map]
         self.param['select_vars'].objects = use_vars
 
         # Open dataset
         self.ds = xr.open_zarr(
-                               self.zfp,
+                               self.select_zfp,
                                group=f'maps/{self.select_map}'
                                ).load()
 
         self.select_vars = use_vars[0]
 
 
-    @param.depends('select_map', 'select_vars', 'clim_vals', watch=False)
+    @param.depends('select_map', 'select_vars', 'clim_vals')
     def _plot_map(self):
         # Load in requested variable
         self.im = self.ds[self.select_vars]
@@ -129,10 +160,10 @@ class XEOL2D(param.Parameterized):
         image = hv.Raster(
                           self.im.data,
                           kdims=['tx', 'ty'],
-                          vdims=self.select_vars
+                          vdims=self.select_vars,
                           )
-        image.opts(cmap=cmap, clim=(vmin, vmax), colorbar=True,
-                   data_aspect=1, tools=[hover, 'tap'])
+        image.opts(cmap=cmap, clim=(vmin, vmax), colorbar=True, framewise=1,
+                   tools=[hover, 'tap'], data_aspect=1, responsive=False)
 
         return image
 
@@ -159,7 +190,16 @@ class XEOL2D(param.Parameterized):
         # Plot the corresponding fit
         if 'fit' in self.select_map:
             mapType = self.select_map
-            fit = xr.open_zarr(self.zfp, group=f'xeol/{mapType}')['params']
+
+            # Remove err/gof if needed
+            # Let's skip this step by embedding the fit type as an attribute
+            mapType = mapType.split('_')
+            mapType = f'{mapType[0]}_{mapType[-1]}'
+
+            fit = xr.open_zarr(
+                               self.select_zfp,
+                               group=f'xeol/{mapType}'
+                               )['params']
 
             if 'gauss1' in mapType:
                 # Get the overall fit
@@ -217,7 +257,7 @@ class XEOL2D(param.Parameterized):
 
 
     def panel(self):
-        use_params = ['select_map', 'select_vars', 'clim_vals']
+        use_params = ['select_zfp', 'select_map', 'select_vars', 'clim_vals']
         settings = pn.panel(self.param, parameters=use_params)
         panel_map = pn.pane.panel(self.dmap_map)
         panel_spec = pn.pane.panel(self.dmap_spec, height=380, width=450)
