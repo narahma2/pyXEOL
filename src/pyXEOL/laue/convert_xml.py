@@ -63,7 +63,7 @@ def _hkl2rgb(hkl):
     if hkl is None:
         return np.array(3*[np.nan])
 
-    vec = abs(normalize(hkl, axis=0))
+    vec = sorted(abs(normalize(hkl, axis=0)))
     poles = np.array([[0,0,1],[0,1,1],[1,1,1]]).T.astype(float)
     poles = normalize(poles, axis=0)
     coefs = np.linalg.inv(poles) @ vec
@@ -71,6 +71,18 @@ def _hkl2rgb(hkl):
     rgb = coefs * 1./coefs.max()
 
     return rgb.flatten()
+
+
+def _hkl2integers(hkl):
+    # Round hkl
+    hkl = (np.round(hkl, 2)*100).astype(int)
+
+    # Calculate least common multiple
+    lcm = math.lcm(*hkl)
+
+    # Convert to integers
+
+    return
 
 
 def _symReducedRecipLattice(refLattice, gm, symOps):
@@ -244,12 +256,13 @@ def process(fp):
     # Initialize lists
     A = [None] * npos
     hkl_grain = [None] * npos
+    invPoleRGB = np.nan * np.zeros((npos, 3))
     Qxyz = [None] * npos
     hkl = [None] * npos
     xy = [None] * npos
 
     # Populate the hkl direction of the sample normal per point
-    nhat = normalize([[0],[1],[-1]], axis=0)
+    normal = np.array([[0],[1],[-1]])
 
     for i, step in enumerate(root):
         # Skip positions without indexed patterns
@@ -328,10 +341,16 @@ def process(fp):
                       ]
 
         # Calculate hkl direction of the sample normal
-        hkl_grain[i] = [normalize(np.linalg.inv(Ai) @ nhat, axis=0) for Ai in A[i]]
+        if A[i] is not None:
+            hkl_grain[i] = normalize(np.linalg.inv(A[i][0]) @ normal, axis=0)
+        else:
+            hkl_grain[i] = None
+
+        # Calculate inverse pole colors
+        invPoleRGB[i,:] = _hkl2rgb(hkl_grain[i])
 
         # xy locations for each of the specified hkl's
-        xy[i] = np.sqrt(2)*np.array(np.abs(hkl_grain[i]))[:,[1,0],0]
+        #xy[i] = np.sqrt(2)*np.array(np.abs(hkl_grain[i]))[:,[1,0],0]
 
 
     # Get standard lattice
@@ -378,22 +397,33 @@ def process(fp):
                   'sampleZ': sample_z,
                   'sampleH': sample_h,
                   'sampleF': sample_f,
-                  'eulerXHF': (RX, RH, RF),
+                  'orientation': rot,
+                  'hkl_normal': hkl_grain,
+                  'anglesXYZ': np.array((RX, RY, RZ)),
+                  'anglesXHF': np.array((RX, RH, RF)),
                   }
 
-    return rotRGB, sampleInfo
+    return rotRGB, invPoleRGB,  sampleInfo
 
 
-if __name__ == '__main__':
+def _test():
     prj_fld = '/mnt/c/Users/naveed/Documents/GitHub/xsd_mic/experiments/2023c1/34IDE/Laue/'
     xml_fp = glob(f'{prj_fld}/recon2D*.xml')
-    rotRGB, sampleInfo = process(xml_fp[0])
+    rotRGB, invPoleRGB, sampleInfo = process(xml_fp[0])
 
-    im = np.flip(rotRGB.reshape((81, 81, -1)).clip(min=0, max=1), axis=(0,1))
+    imRot = np.flip(rotRGB.reshape((81, 81, -1)).clip(min=0, max=1), axis=(0,1))
+    imInv = np.flip(invPoleRGB.reshape((81, 81, -1)).clip(min=0, max=1), axis=(0,1))
     sampleX = np.flip(sampleInfo['sampleX'].reshape((81,81)), axis=(0,1))
     sampleH = np.flip(sampleInfo['sampleH'].reshape((81,81)), axis=(0,1))
     minX, maxX = sampleX[0,0], sampleX[0,-1]
     minH, maxH = sampleH[0,0], sampleH[-1,0]
 
-    plt.imshow(im, origin='lower', extent=(minX, maxX, minH, maxH))
+    fig, ax = plt.subplots(1, 2)
+    ax[0].imshow(imRot, origin='lower', extent=(minX, maxX, minH, maxH))
+    ax[1].imshow(imInv, origin='lower', extent=(minX, maxX, minH, maxH))
+
+    ax[0].set_title('rotRGB')
+    ax[1].set_title('invPoleRGB')
     plt.show()
+
+    return rotRGB, invPoleRGB, sampleInfo
