@@ -33,7 +33,7 @@ def fwhm2sigma(fwhm):
     return fwhm/(np.sqrt(np.log(2)))
 
 
-def gauss(x, x0, y0, sigma):
+def gauss(x, x1, y1, sigma1):
     """
     Fits a 1D Gaussian curve to the input dataset.
 
@@ -44,19 +44,19 @@ def gauss(x, x0, y0, sigma):
     ----------
     x : numpy.ndarray
         Input x values for calculating best f(x) values.
-    x0 : float
+    x1 : float
         Center of Gaussian curve.
-    y0 : float
+    y1 : float
         Amplitude of Gaussian curve.
-    sigma : float
-        Width of the Gaussian curve. FWHM = 2*sqrt(ln 2)*sigma.
+    sigma1 : float
+        Width of the Gaussian curve. FWHM = 2*sqrt(ln 2)*sigma1.
 
     Returns
     -------
     numpy.ndarray
         Fitted f(x) values using the Gaussian parameters.
     """
-    p = [x0, y0, sigma]
+    p = [x1, y1, sigma1]
 
     return p[1] * np.exp(-((x-p[0])/p[2])**2)
 
