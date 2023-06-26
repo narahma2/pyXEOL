@@ -20,6 +20,7 @@ class XEOL2D(param.Parameterized):
     select_map = param.Selector(default='', objects=[])
     select_vars = param.Selector(default='', objects=[])
     clim_vals = param.Range(default=(0, 100), bounds=(0, 100))
+    thresh = param.Number(0)
     x = param.Number(0)
     y = param.Number(0)
 
@@ -33,19 +34,19 @@ class XEOL2D(param.Parameterized):
         self.param['select_zfp'].objects = zfp
 
         # Get all map types
-        map_types = glob(f'{zfp[0]}/maps/*')
-        self.map_groups = [x.split('maps/')[-1] for x in map_types]
+        map_types = glob(f'{zfp[0]}/maps/xeol/*')
+        self.map_groups = [x.split('maps/xeol/')[-1] for x in map_types]
         self.param['select_map'].objects = self.map_groups
 
         # Get all fit types
-        fit_types = glob(f'{zfp[0]}/xeol/fit_*')
+        fit_types = glob(f'{zfp[0]}/maps/xeol/fit_*')
         self.fit_groups = [x.split('xeol/')[-1] for x in fit_types]
 
         # Load in the variables
         self.map_vars = {
                          x: list(xr.open_zarr(
                                               zfp[0],
-                                              group=f'maps/{x}').keys()
+                                              group=f'maps/xeol/{x}').keys()
                                               )
                          for x in self.map_groups
                          }
@@ -57,17 +58,23 @@ class XEOL2D(param.Parameterized):
         # Get the 2D coordinates (should all be the same for each map)
         self.t = xr.open_zarr(
                               zfp[0],
-                              group=f'maps/{self.map_groups[0]}'
+                              group=f'maps/xeol/{self.map_groups[0]}'
                               )['t'].load()
 
         # Load in dataset
         self.ds = xr.open_zarr(
                                zfp[0],
-                               group=f'maps/{self.map_groups[0]}'
+                               group=f'maps/xeol/{self.map_groups[0]}'
                                ).load()
 
         # Load in image
         self.im = self.ds[self.map_vars[self.map_groups[0]][0]]
+
+        # Load in intensity values (for thresholding)
+        self.peaks = xr.open_zarr(
+                                  zfp[0],
+                                  group=f'maps/xeol/stats'
+                                  )['peaks'].load()
 
         # Update params
         self.select_zfp = self.param['select_zfp'].objects[0]
@@ -85,19 +92,19 @@ class XEOL2D(param.Parameterized):
         self.spectra = xr.open_zarr(self.select_zfp, group='xeol')['data']
 
         # Load maps
-        map_types = glob(f'{self.select_zfp}/maps/*')
-        self.map_groups = [x.split('maps/')[-1] for x in map_types]
+        map_types = glob(f'{self.select_zfp}/maps/xeol/*')
+        self.map_groups = [x.split('maps/xeol/')[-1] for x in map_types]
 
         # Get the 2D coordinates (should all be the same for each map)
         self.t = xr.open_zarr(
                               self.select_zfp,
-                              group=f'maps/{self.map_groups[0]}'
+                              group=f'maps/xeol/{self.map_groups[0]}'
                               )['t'].load()
 
         # Open dataset
         self.ds = xr.open_zarr(
                                self.select_zfp,
-                               group=f'maps/{self.map_groups[0]}'
+                               group=f'maps/xeol/{self.map_groups[0]}'
                                ).load()
 
         self.param['select_map'].objects = self.map_groups
@@ -105,6 +112,12 @@ class XEOL2D(param.Parameterized):
 
         # Load in image
         self.im = self.ds[self.map_vars[self.map_groups[0]][0]]
+
+        # Load in intensity values (for thresholding)
+        self.peaks = xr.open_zarr(
+                                  self.select_zfp,
+                                  group=f'maps/xeol/stats'
+                                  )['peaks'].load()
 
 
     @param.depends('select_map', watch=True)
@@ -115,16 +128,20 @@ class XEOL2D(param.Parameterized):
         # Open dataset
         self.ds = xr.open_zarr(
                                self.select_zfp,
-                               group=f'maps/{self.select_map}'
+                               group=f'maps/xeol/{self.select_map}'
                                ).load()
 
         self.select_vars = use_vars[0]
 
 
-    @param.depends('select_map', 'select_vars', 'clim_vals')
+    @param.depends('select_map', 'select_vars', 'clim_vals', 'thresh')
     def _plot_map(self):
         # Load in requested variable
         self.im = self.ds[self.select_vars]
+
+        # Threshold image based on intensity
+        mask = xr.where(self.peaks > self.thresh, 1, np.nan)
+        self.im = self.im * mask
 
         # Unpack clim values
         pmin, pmax = self.clim_vals
@@ -156,14 +173,19 @@ class XEOL2D(param.Parameterized):
                                       '$y': codey,
                                       })
 
+        # Mean value in title
+        title = f'Mean = {np.nanmean(self.im):0.3f}'
+
         # Raster image
         image = hv.Raster(
                           self.im.data,
                           kdims=['tx', 'ty'],
                           vdims=self.select_vars,
                           )
-        image.opts(cmap=cmap, clim=(vmin, vmax), colorbar=True, framewise=1,
-                   tools=[hover, 'tap'], data_aspect=1, responsive=False)
+        image.opts(cmap=cmap, clim=(vmin, vmax), colorbar=True,
+                   clipping_colors={'NaN': 'green'}, framewise=1,
+                   tools=[hover, 'tap'], title=title, data_aspect=1,
+                   responsive=False)
 
         return image
 
@@ -257,7 +279,8 @@ class XEOL2D(param.Parameterized):
 
 
     def panel(self):
-        use_params = ['select_zfp', 'select_map', 'select_vars', 'clim_vals']
+        use_params = ['select_zfp', 'select_map', 'select_vars',
+                      'clim_vals', 'thresh']
         settings = pn.panel(self.param, parameters=use_params)
         panel_map = pn.pane.panel(self.dmap_map)
         panel_spec = pn.pane.panel(self.dmap_spec, height=380, width=450)
