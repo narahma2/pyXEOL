@@ -41,9 +41,9 @@ def map_fit(zfp, fast_dim, slow_dim, fit_mode='gauss1'):
     out3 = xr.Dataset(data_vars=data_vars3, coords=coords)
 
     # Save output
-    out1.to_zarr(zfp, mode='w', group=f'maps/fit_{fit_mode}')
-    out2.to_zarr(zfp, mode='w', group=f'maps/fit_err_{fit_mode}')
-    out3.to_zarr(zfp, mode='w', group=f'maps/fit_gof_{fit_mode}')
+    out1.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_{fit_mode}')
+    out2.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_err_{fit_mode}')
+    out3.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_gof_{fit_mode}')
 
     return
 
@@ -77,7 +77,7 @@ def map_sumInt(zfp, lb, ub, fast_dim, slow_dim):
     out = xr.Dataset(data_vars=data_vars, coords=coords)
 
     # Save output
-    out.to_zarr(zfp, mode='a', group='maps/sumInt')
+    out.to_zarr(zfp, mode='a', group='maps/xeol/sumInt')
 
     return
 
@@ -89,7 +89,7 @@ def map_stats(zfp, fast_dim, slow_dim):
     # Reshaping by the fastest dimension/inner loop, most likely this is
     # the X motor/width, but depends on the scan setup...
     spectra = zs['data'].coarsen(t=fast_dim).construct(t=('ty', 'tx'))
-    snr = zs['snr'].coarsen(t=fast_dim).construct(t=('ty', 'tx'))
+    #snr = zs['snr'].coarsen(t=fast_dim).construct(t=('ty', 'tx'))
 
     # Make sure the shape is what's expected...
     assert (slow_dim, fast_dim) == spectra.shape[:2]
@@ -106,7 +106,7 @@ def map_stats(zfp, fast_dim, slow_dim):
 
     # Create new dataset
     data_vars = {
-                 'snr': (['ty', 'tx'], snr.data),
+                 #'snr': (['ty', 'tx'], snr.data),
                  'peaks': (['ty', 'tx'], peaks.data),
                  'peakCenters': (['ty', 'tx'], centers_nm.data),
                  }
@@ -117,6 +117,6 @@ def map_stats(zfp, fast_dim, slow_dim):
     out = xr.Dataset(data_vars=data_vars, coords=coords)
 
     # Save output
-    out.to_zarr(zfp, mode='w', group='maps/stats')
+    out.to_zarr(zfp, mode='w', group='maps/xeol/stats')
 
     return
