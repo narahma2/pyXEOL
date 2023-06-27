@@ -1,5 +1,7 @@
+import math
 import numpy as np
 import os
+import xarray as xr
 
 from glob import glob
 from matplotlib import pyplot as plt
@@ -7,12 +9,69 @@ from scipy.spatial.transform import Rotation as R
 from sklearn.preprocessing import normalize
 from xml.etree import ElementTree as ET
 
-# Environment version info:
-# numpy: 1.21.5
-# igor: 0.3
-# matplotlib: 3.5.2
-# scipy: 1.9.1
-# scikit-learn: 1.0.2
+
+def process_single(xml_fp, zfp):
+    # Get sample info from the XML file
+    sampleInfo = _process(xml_fp)
+
+    # Create xarray Dataset
+    t = np.arange(0, len(sampleInfo['names']))
+    mdir = ['X', 'Y', 'Z']
+    sdir = ['X', 'H', 'F']
+    miller = ['h', 'k', 'l']
+
+    data_vars = {
+                 'laue_folder': sampleInfo['folder'],
+                 'laue_fname': (['t'], sampleInfo['names']),
+                 'oriMat': (['t', 'rows', 'cols'], sampleInfo['orientation']),
+                 'oriXYZ': (['mdir', 't'], sampleInfo['anglesXYZ']),
+                 'oriXHF': (['sdir', 't'], sampleInfo['anglesXHF']),
+                 'hkl_float': (['t', 'miller'], sampleInfo['hkl_float']),
+                 'hkl_int': (['t', 'miller'], sampleInfo['hkl_int']),
+                 'pos_x': (['t'], sampleInfo['sampleX']),
+                 'pos_y': (['t'], sampleInfo['sampleY']),
+                 'pos_z': (['t'], sampleInfo['sampleZ']),
+                 'pos_h': (['t'], sampleInfo['sampleH']),
+                 'pos_f': (['t'], sampleInfo['sampleF']),
+                 }
+    coords = dict(t=t, mdir=mdir, sdir=sdir, miller=miller)
+    out = xr.Dataset(data_vars=data_vars, coords=coords)
+
+    # Add in variable attributes
+    out['laue_folder'].attrs['label'] = 'Input folder'
+    out['laue_fname'].attrs['label'] = 'Input file names'
+    out['oriMat'].attrs['label'] = 'Orientation matrix for pattern #0'
+    out['oriXYZ'].attrs['label'] = 'Orientation angles in XYZ'
+    out['oriXYZ'].attrs['units'] = 'rad'
+    out['oriXHF'].attrs['label'] = 'Orientation angles in XHF'
+    out['oriXHF'].attrs['units'] = 'rad'
+    out['hkl_float'].attrs['label'] = 'Raw HKL values for sample normal'
+    out['hkl_int'].attrs['label'] = 'Closest HKL integers for sample normal'
+    out['pos_x'].attrs['label'] = 'Sample X position'
+    out['pos_x'].attrs['units'] = 'microns'
+    out['pos_y'].attrs['label'] = 'Sample Y position'
+    out['pos_y'].attrs['units'] = 'microns'
+    out['pos_z'].attrs['label'] = 'Sample Z position'
+    out['pos_z'].attrs['units'] = 'microns'
+    out['pos_h'].attrs['label'] = 'Sample H position'
+    out['pos_h'].attrs['units'] = 'microns'
+    out['pos_f'].attrs['label'] = 'Sample F position'
+    out['pos_f'].attrs['units'] = 'microns'
+
+    # Add in coordinate attributes
+    out['t'].attrs['label'] = 'File index'
+    out['t'].attrs['units'] = ''
+    out['mdir'].attrs['label'] = 'Directions in beamline coordinate system'
+    out['mdir'].attrs['units'] = ''
+    out['sdir'].attrs['label'] = 'Directions in sample coordinate system'
+    out['sdir'].attrs['units'] = ''
+    out['miller'].attrs['label'] = 'Miller indices'
+    out['miller'].attrs['units'] = ''
+
+    # Write data
+    out.to_zarr(zfp, mode='w', group='laue')
+
+    return
 
 
 def _calcStdLattice(a, b, c, alpha, beta, gamma):
@@ -59,30 +118,44 @@ def _yz2hf(y, z):
     return h, f
 
 
-def _hkl2rgb(hkl):
-    if hkl is None:
-        return np.array(3*[np.nan])
+def _hklOfNormal(A):
+    normal = np.array([[0], [1], [-1]])
+    hkl = np.linalg.inv(A) @ normal
 
-    vec = sorted(abs(normalize(hkl, axis=0)))
-    poles = np.array([[0,0,1],[0,1,1],[1,1,1]]).T.astype(float)
-    poles = normalize(poles, axis=0)
-    coefs = np.linalg.inv(poles) @ vec
-    coefs[coefs < 1E-12] = 0
-    rgb = coefs * 1./coefs.max()
+    # Normalize
+    norm = np.linalg.norm(hkl)
+    hkl = hkl / norm
 
-    return rgb.flatten()
+    return hkl
 
 
 def _hkl2integers(hkl):
-    # Round hkl
-    hkl = (np.round(hkl, 2)*100).astype(int)
+    if np.isnan(hkl).any():
+        return hkl.flatten()
 
-    # Calculate least common multiple
+    # Round hkl
+    hkl = np.round(hkl*10, 0).astype(int).flatten()
+
+    # Calculate least common multiple and greatest common divisor
     lcm = math.lcm(*hkl)
+    gcd = math.gcd(*hkl)
 
     # Convert to integers
+    if gcd == 1:
+        pass
+    elif gcd > 1:
+        hkl = (hkl / gcd).astype(int)
+    elif lcm > 0:
+        hkl = (lcm / hkl).astype(int)
 
-    return
+    # Round larger numbers to zero (effectively parallel)
+    hkl[np.abs(hkl) > 50] = 0
+
+    # Take absolute value and sort
+    # FIX: Cubic structures only! Check symmetry operations to generalize...
+    hkl = np.sort(np.abs(hkl))
+
+    return hkl
 
 
 def _symReducedRecipLattice(refLattice, gm, symOps):
@@ -174,66 +247,40 @@ def _squareUpMatrix(rot):
     return rot
 
 
-def _calcRGB_JZT(RX, RH, RF, satAngle=None):
-    if satAngle is None:
-        rr = np.hstack((RX, RH, RF))
-        rr = np.degrees(2*np.arctan(np.abs(rr)))
-        satAngle = np.nanpercentile(rr, 95)
-        satAngle = float(np.format_float_positional(
-                                                    satAngle,
-                                                    precision=2,
-                                                    unique=False,
-                                                    fractional=False,
-                                                    trim='k'
-                                                    ))
-
-    # Combine Euler angles and normalize
-    vec3 = np.stack((RX, RH, RF)).T
-    mag = np.linalg.norm(vec3, axis=1)
-    vec3 /= mag[:, np.newaxis]
-
-    # Scale by angle
-    angle = np.degrees(2*np.arctan(mag))
-    vec3 *= (angle/satAngle)[:, np.newaxis]
-
-    # Unpack and calculate colors
-    cx, cy, cz = vec3.clip(min=-1, max=1).T
-    r, g, b = np.zeros((3, cx.shape[0]))
-
-    r[cx>0] += cx[cx>0]
-    g[cx<=0] += abs(cx[cx<=0])/2
-    b[cx<=0] += abs(cx[cx<=0])/2
-
-    g[cy>0] += cy[cy>0]
-    r[cy<=0] += abs(cy[cy<=0])/2
-    b[cy<=0] += abs(cy[cy<=0])/2
-
-    b[cz>0] += cz[cz>0]
-    r[cz<=0] += abs(cz[cz<=0])/2
-    g[cz<=0] += abs(cz[cz<=0])/2
-
-    # Pack into array
-    rotRGB = np.stack((r, g, b), axis=1)
-
-    return rotRGB
-
-
-def _getField(root, tag, retType):
+def _getField(node, tag, retType):
     if retType == 'tag':
-        return [x.tag for x in root.iter('*') if tag in x.tag]
+        return [x.tag for x in node.iter('*') if tag in x.tag]
     elif retType == 'value':
-        return [x.text for x in root.iter('*') if tag in x.tag]
+        return [x.text for x in node.iter('*') if tag in x.tag]
     else:
         return None
 
 
-def process(fp):
+def _getChildren(node, key, tag, dtype=np.float32):
+    val = [
+           map(dtype, x.text.split(' '))
+           for x in node.find(key).iter('*') if tag in x.tag
+           ]
+
+    return val
+
+
+def _process(fp):
     # Open XML file and get root
     tree = ET.parse(fp)
     root = tree.getroot()
 
     # Number of positions
     npos = len(root)
+
+    # File names
+    # Sometimes if there are no points the image name isn't saved...so I am
+    # building this up manually
+    basename = _getField(root[0], 'inputImage', 'value')[0]
+    basenum = int(basename.split('_')[-1].split('.h5')[0])
+    basename = os.path.basename(basename).split(f'{basenum}.h5')[0]
+    names = [f'{basename}{i+basenum}.h5' for i, _ in enumerate(root)]
+    folder = os.path.dirname(names[0])
 
     # Motor positions
     motor_x = np.float32(_getField(root, 'Xsample', 'value'))
@@ -247,140 +294,69 @@ def process(fp):
     # Indexing key (should be the last element, but just being safe)
     ind_key = _getField(root, 'indexing', 'tag')
 
-    # Number of patterns per position
-    npatterns = [
-                 int(root[i].find(ind_key[i]).attrib['Npatterns'])
-                 for i in range(npos)
-                 ]
-
     # Initialize lists
     A = [None] * npos
-    hkl_grain = [None] * npos
-    invPoleRGB = np.nan * np.zeros((npos, 3))
-    Qxyz = [None] * npos
-    hkl = [None] * npos
-    xy = [None] * npos
+    npatterns = np.zeros(npos, dtype=int)
+    hkl_float = np.nan * np.zeros((npos, 3), dtype=np.float32)
+    hkl_sym = np.nan * np.zeros((npos, 3), dtype=np.float32)
+    hkl_int = np.nan * np.zeros((npos, 3), dtype=np.float32)
 
     # Populate the hkl direction of the sample normal per point
     normal = np.array([[0],[1],[-1]])
 
     for i, step in enumerate(root):
         # Skip positions without indexed patterns
-        if npatterns[i] == 0:
+        try:
+            npatterns[i] = int(step.find(ind_key[i]).attrib['Npatterns'])
+            if npatterns[i] == 0:
+                continue
+        except:
             continue
 
         # astar/bstar/cstar
-        astar = [
-                 x[0].text.split(' ') for x in step.find(ind_key[i]).iter('*')
-                 if 'recip' in x.tag
-                 ]
-        bstar = [
-                 x[1].text.split(' ') for x in step.find(ind_key[i]).iter('*')
-                 if 'recip' in x.tag
-                 ]
-        cstar = [
-                 x[2].text.split(' ') for x in step.find(ind_key[i]).iter('*')
-                 if 'recip' in x.tag
-                 ]
-
-        # hkl of each of the indexed points as a list of lists
-        tmp = [
-               [
-                list(map(int, x[n].text.split(' ')))
-                for x in step.find(ind_key[i]).iter('*')
-                if 'hkl' in x.tag
-                ]
-               for n in range(3)
-               ]
-
-        # Number of points used in each pattern
-        npt = [len(x) for x in tmp[0]]
-
-        # Convert hkl's into tuples corresponding to each point in each pattern
-        hkl[i] = [
-                  [(tmp[0][p][q],tmp[1][p][q],tmp[2][p][q]) for q in range(npt[p])]
-                  for p in range(npatterns[i])
-                  ]
-
-        # Indexed peaks used for fitting
-        peaks_ind = [
-                     list(map(int, x[3].text.split(' ')))
-                     for x in step.find(ind_key[i]).iter('*')
-                     if 'hkl' in x.tag
-                     ]
-
-        # Detector, peaksXY, and Qx/Qy keys
-        dt = [x.tag for x in root[i] if 'detector' in x.tag][0]
-        pk = [x.tag for x in root[i].find(dt) if 'peaksXY' in x.tag][0]
-        qx = [x.tag for x in root[i].find(dt).find(pk) if 'Qx' in x.tag][0]
-        qy = [x.tag for x in root[i].find(dt).find(pk) if 'Qy' in x.tag][0]
-        qz = [x.tag for x in root[i].find(dt).find(pk) if 'Qz' in x.tag][0]
-
-        # Get all the Qx/Qy/Qz values
-        Qxyz = [
-                np.float32(root[i].find(dt).find(pk).find(x).text.split(' '))
-                for x in (qx, qy, qz)
-                ]
-
-        # Convert into a NumPy array
-        Qxyz = np.array(Qxyz).T
-
-        # Get used points only
-        Qxyz_used = [Qxyz[p] for p in peaks_ind]
+        astar = _getChildren(step, ind_key[i], 'astar')
+        bstar = _getChildren(step, ind_key[i], 'bstar')
+        cstar = _getChildren(step, ind_key[i], 'cstar')
 
         # Collect into reciprocal matrix
         A[i] = [
-                np.stack(list(map(np.float32, (a, b, c)))).T
+                np.reshape((*a, *b, *c), (3,3)).T
                 for (a, b, c) in zip(astar, bstar, cstar)
                 ]
 
-        # Calculate the Qhat vector manually (just to check)
-        Qxyz_check = [
-                      normalize((Ai @ np.array(hkl[i][p]).T).T, axis=1)
-                      for p, Ai in enumerate(A[i])
-                      ]
-
         # Calculate hkl direction of the sample normal
-        if A[i] is not None:
-            hkl_grain[i] = normalize(np.linalg.inv(A[i][0]) @ normal, axis=0)
-        else:
-            hkl_grain[i] = None
+        hkl = normalize(np.linalg.inv(A[i][0]) @ normal, axis=0)
+        hkl_float[i] = hkl.flatten()
 
-        # Calculate inverse pole colors
-        invPoleRGB[i,:] = _hkl2rgb(hkl_grain[i])
+        # Get closest hkl integers
+        hkl_int[i] = _hkl2integers(hkl_float[i])
 
-        # xy locations for each of the specified hkl's
-        #xy[i] = np.sqrt(2)*np.array(np.abs(hkl_grain[i]))[:,[1,0],0]
-
-
-    # Get standard lattice
-    stdLattice = _calcStdLattice(0.648, 0.648, 0.648, 90, 90, 90)
-
-    # Loop through the first pattern's reciprocal matrix for symmetry reduction
-    angle = [None] * npos
-    angle2 = [None] * npos
-    rot = [None] * npos
-    RX, RY, RZ = np.nan*np.zeros((3, npos))
-    totalAngles = [None] * npos
-
-    maxAngle = np.inf
+    # Get standard lattice (should all be the same)
+    latticeParams = _getChildren(root[0], ind_key[0], 'latticeParameters')[0]
+    stdLattice = _calcStdLattice(*latticeParams)
 
     # Load symmetry operations
     symOps_fld = f'{os.path.dirname(os.path.abspath(__file__))}/symOps/'
     symOps = np.load(f'{symOps_fld}/SymmetryOps225.npz')['wData']
+
+    # Loop through the first pattern's reciprocal matrix for symmetry reduction
+    rot = np.nan * np.zeros((npos, 3, 3), dtype=np.float32)
+    RX, RY, RZ = np.nan*np.zeros((3, npos))
+    totalAngles = np.zeros(npos)
+    maxAngle = np.inf
 
     for i in range(npos):
         if A[i] is None:
             continue
 
         gmi = A[i][0]
-        angle[i], rot[i] = _symReducedRecipLattice(stdLattice, gmi, symOps)
-        angle2[i], vec3 = _axisOfMatrix(rot[i], squareUp=1)
-        vec3 *= np.tan(np.radians(angle2[i])/2)
+        _, rot[i, ...] = _symReducedRecipLattice(stdLattice, gmi, symOps)
+        angle, vec3 = _axisOfMatrix(rot[i], squareUp=1)
+        vec3 *= np.tan(np.radians(angle)/2)
 
-        if angle2[i] <= maxAngle:
+        if angle <= maxAngle:
             RX[i], RY[i], RZ[i] = vec3.flatten()
-            totalAngles[i] = angle2[i]
+            totalAngles[i] = angle
 
     # Rotation about the X-axis by +45 degrees
     rotFrame = R.from_rotvec([np.pi/4, 0, 0]).as_matrix()
@@ -388,42 +364,30 @@ def process(fp):
     # Calculate rotations about H/F axes
     Rxhf = (np.linalg.inv(rotFrame) @ np.vstack((RX, RY, RZ))).T
     RH, RF = zip(*Rxhf[:, 1:])
-    rotRGB = _calcRGB_JZT(RX, RH, RF, satAngle=None)
 
     # Collect sample info
     sampleInfo = {
+                  'folder': folder,
+                  'names': names,
                   'sampleX': sample_x,
                   'sampleY': sample_y,
                   'sampleZ': sample_z,
                   'sampleH': sample_h,
                   'sampleF': sample_f,
                   'orientation': rot,
-                  'hkl_normal': hkl_grain,
+                  'hkl_float': hkl_float,
+                  'hkl_int': hkl_int,
                   'anglesXYZ': np.array((RX, RY, RZ)),
                   'anglesXHF': np.array((RX, RH, RF)),
                   }
 
-    return rotRGB, invPoleRGB,  sampleInfo
+    return sampleInfo
 
 
 def _test():
-    prj_fld = '/mnt/c/Users/naveed/Documents/GitHub/xsd_mic/experiments/2023c1/34IDE/Laue/'
-    xml_fp = glob(f'{prj_fld}/recon2D*.xml')
-    rotRGB, invPoleRGB, sampleInfo = process(xml_fp[0])
+    git_fld = '/mnt/c/Users/naveed/Documents/GitHub/xsd_mic'
+    laue_fld = f'{git_fld}/experiments/2023c1/34IDE/Laue/'
+    xml_fp = glob(f'{laue_fld}/recon2D*.xml')
+    sampleInfo = _process(xml_fp[0])
 
-    imRot = np.flip(rotRGB.reshape((81, 81, -1)).clip(min=0, max=1), axis=(0,1))
-    imInv = np.flip(invPoleRGB.reshape((81, 81, -1)).clip(min=0, max=1), axis=(0,1))
-    sampleX = np.flip(sampleInfo['sampleX'].reshape((81,81)), axis=(0,1))
-    sampleH = np.flip(sampleInfo['sampleH'].reshape((81,81)), axis=(0,1))
-    minX, maxX = sampleX[0,0], sampleX[0,-1]
-    minH, maxH = sampleH[0,0], sampleH[-1,0]
-
-    fig, ax = plt.subplots(1, 2)
-    ax[0].imshow(imRot, origin='lower', extent=(minX, maxX, minH, maxH))
-    ax[1].imshow(imInv, origin='lower', extent=(minX, maxX, minH, maxH))
-
-    ax[0].set_title('rotRGB')
-    ax[1].set_title('invPoleRGB')
-    plt.show()
-
-    return rotRGB, invPoleRGB, sampleInfo
+    return sampleInfo
