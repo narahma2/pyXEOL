@@ -281,7 +281,7 @@ def _plot_calib(calib, lines):
                         hspace=0.66
                         )
 
-    for i, a in enumerate(ax):
+    for i, a in enumerate(np.ravel(ax)):
         # Visualize spectra
         a.plot(calib['xval/nm'][i], lines[i], color=cdata, alpha=1, zorder=99)
 
@@ -367,14 +367,14 @@ def _plot_calib(calib, lines):
                           alpha=1,
                           label='3$^{rd}$ order (unused)'
                           )
-    ax[0].legend(
-                 handles=[cross, lineUsed, line1, line2, line3],
-                 fontsize='x-small',
-                 ncols=2
-                 )
+    np.ravel(ax)[0].legend(
+                           handles=[cross, lineUsed, line1, line2, line3],
+                           fontsize='x-small',
+                           ncols=2
+                           )
 
     # X axis label
-    ax[-1].set_xlabel('Wavelength (nm)')
+    np.ravel(ax)[-1].set_xlabel('Wavelength (nm)')
 
     plt.show()
 
