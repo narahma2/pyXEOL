@@ -15,6 +15,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 from scipy.optimize import curve_fit
 from shutil import rmtree
+from skimage.restoration import estimate_sigma
 from sklearn.metrics import r2_score
 
 from pyxeol.specfun import (
@@ -37,7 +38,8 @@ def process_stack_dask(
                        load=True,
                        fit=True,
                        fit_mode='gauss1',
-                       wl_crop=None
+                       wl_crop=None,
+                       rolling=None
                        ):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
@@ -65,7 +67,7 @@ def process_stack_dask(
         print(f'[0/{steps}] Initiating...')
         if load:
             _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop)
-        _pipeline_specfit(zfp, steps, fit_mode)
+        _pipeline_specfit(zfp, steps, fit_mode, rolling)
     else:
         steps = 3
         print(f'[0/{steps}] Initiating...')
@@ -240,11 +242,6 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
     if wl_crop is not None:
         raw = raw[:,:,wl_crop:-wl_crop]
 
-    # Calculate SNR (using 99th percentile)
-    noise = np.nanstd(raw[:,:100,:100], axis=(1,2))
-    signal = raw.map_blocks(np.nanpercentile, 99, drop_axis=(1,2))
-    snr = signal / noise
-
     # Baseline (scalar subtraction)
     bl = da.median(raw[:,::5,-100:], axis=(1,2))
     raw = (raw - bl[:, np.newaxis, np.newaxis]).sum(axis=1)
@@ -264,47 +261,51 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
 
     # Save output
     _update_stdout(f'[3/{steps}] Saving processed images...')
-    names = [x.split('/')[-1].split('.')[0] for x in fn]
-    data_vars = {
-                 'folder': fn[0].split('/')[-2],
-                 'files': names,
-                 }
-    #coords = dict(t=nums)
-    out1 = xr.Dataset(data_vars=data_vars)
-    out1.to_zarr(zfp, mode='w', group='/')
+    folder = os.path.dirname(fn[0])
+    names = [os.path.basename(x).split('.')[0] for x in fn]
+    t = np.arange(0, raw.shape[0])
 
-    nums = np.arange(0, ds.shape[0])
     data_vars = {
+                 'xeol_folder': folder,
+                 'xeol_fname': names,
                  'bg': (['x'], bg),
-                 'snr': (['t'], snr),
                  'data': (['t', 'x'], ds),
                  }
-    coords = dict(x=wavelengths, t=nums)
-    out2 = xr.Dataset(data_vars=data_vars, coords=coords)
+    coords = dict(x=wavelengths, t=t)
+    out = xr.Dataset(data_vars=data_vars, coords=coords)
 
     # Add in variable attributes
-    out2['bg'].attrs['label'] = 'Vector background'
-    out2['snr'].attrs['label'] = 'Signal-to-noise raio (99th percentile)'
-    out2['data'].attrs['label'] = 'Measured data'
+    out['xeol_folder'].attrs['label'] = 'Input folder'
+    out['xeol_fname'].attrs['label'] = 'Input file names'
+    out['bg'].attrs['label'] = 'Vector background'
+    out['data'].attrs['label'] = 'Measured data'
 
     # Add in coordinate attributes
-    out2['x'].attrs['label'] = 'Wavelength'
-    out2['x'].attrs['units'] = 'nm'
-    out2['t'].attrs['label'] = 'File number'
-    out2['t'].attrs['units'] = ''
+    out['x'].attrs['label'] = 'Wavelength'
+    out['x'].attrs['units'] = 'nm'
+    out['t'].attrs['label'] = 'File index'
+    out['t'].attrs['units'] = ''
 
     with ProgressBar():
-        out2.to_zarr(zfp, mode='w', group='xeol')
+        out.to_zarr(zfp, mode='w', group='xeol')
 
     return
 
 
-def _pipeline_specfit(zfp, steps, fit_mode='gauss1'):
+def _pipeline_specfit(zfp, steps, fit_mode='gauss1', rolling=None):
     _clear_stdout(1)
 
     # Load in the processed spectra data
     _update_stdout(f'[4/{steps}] Initiating fitting...')
-    xeol = xr.open_zarr(zfp, group='xeol', drop_variables=['bg', 'snr'])
+    raw = xr.open_zarr(zfp, group='xeol')
+    var_list = [x for x in raw.data_vars]
+    drop = set(var_list) - set(['data'])
+    raw = raw.drop_vars(drop)
+    xeol = raw.copy()
+
+    # Rolling window average (if requested)
+    if rolling is not None:
+        xeol['data'] = xeol['data'].rolling({'x': rolling}).mean()
 
     # Gaussian parameter estimates and bounds using a random sample of the data
     numPts = xeol['t'].shape[0]
@@ -378,10 +379,10 @@ def _pipeline_specfit(zfp, steps, fit_mode='gauss1'):
 
     # Calculate fit profiles
     if fit_mode == 'gauss1':
-        fit = gauss(xeol['data'].data, *coeff.T[:,:,np.newaxis])
+        fit = gauss(xeol['x'].data, *coeff.T[:,:,np.newaxis])
         c_units = ['nm', 'a.u.', 'nm']
     elif fit_mode == 'gauss2':
-        fit = gauss2(xeol['data'].data, *coeff.T[:,:,np.newaxis])
+        fit = gauss2(xeol['x'].data, *coeff.T[:,:,np.newaxis])
         c_units = ['nm', 'a.u.', 'nm', 'nm', 'a.u.', 'nm']
 
     # Goodness-of-fit
