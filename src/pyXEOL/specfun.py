@@ -128,19 +128,19 @@ def gauss_p0_stack(ydata, xdata, filtWin=None, xcrop=None):
     ydata = savgol_filter(ydata, filtWin, 3, axis=1)
 
     if xcrop is not None:
-        ind = ydata[:,xcrop:-xcrop].argmax(axis=1) + xcrop
+        ind = np.nanargmax(ydata[:,xcrop:-xcrop], axis=1) + xcrop
         x0 = np.take(xdata, ind)
     else:
-        ind = ydata.argmax(axis=1)
+        ind = np.argmax(ydata, axis=1)
         x0 = np.take(xdata, ind)
 
     # Peak intensity estimates
-    y0 = ydata.max(axis=1)
+    y0 = np.nanmax(ydata, axis=1)
 
     # Peak sigma estimates
     deriv = np.diff(ydata, axis=1, n=1)
-    lb = np.take(xdata, deriv.argmax(axis=1))
-    ub = np.take(xdata, deriv.argmin(axis=1))
+    lb = np.take(xdata, np.nanargmax(deriv, axis=1))
+    ub = np.take(xdata, np.nanargmin(deriv, axis=1))
     fwhm = np.abs(ub-lb)
     sigma = fwhm2sigma(fwhm)
 
