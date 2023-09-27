@@ -105,17 +105,17 @@ def gauss_p0(ydata, xdata=None, filtWin=None, xcrop=None):
 
     # Peak center estimate
     if xcrop is not None:
-        ind = np.argmax(ydata[xcrop:-xcrop]) + xcrop
+        ind = np.nanargmax(ydata[xcrop:-xcrop]) + xcrop
         x0 = xdata[ind]
     else:
-        x0 = xdata[np.argmax(ydata)]
+        x0 = xdata[np.nanargmax(ydata)]
 
     # Peak intensity estimate
-    y0 = np.max(ydata)
+    y0 = np.nanmax(ydata)
 
     # Peak sigma estimate
     deriv = np.diff(ydata, n=1)
-    fwhm = abs(xdata[deriv.argmin()] - xdata[deriv.argmax()])
+    fwhm = abs(xdata[np.nanargmin(deriv)] - xdata[np.nanargmax(deriv)])
     sigma = fwhm2sigma(fwhm)
 
     return (x0, y0, sigma)
@@ -131,7 +131,7 @@ def gauss_p0_stack(ydata, xdata, filtWin=None, xcrop=None):
         ind = np.nanargmax(ydata[:,xcrop:-xcrop], axis=1) + xcrop
         x0 = np.take(xdata, ind)
     else:
-        ind = np.argmax(ydata, axis=1)
+        ind = np.nanargmax(ydata, axis=1)
         x0 = np.take(xdata, ind)
 
     # Peak intensity estimates
