@@ -104,11 +104,15 @@ def map_stats(zfp, fast_dim, slow_dim):
     centers_px = smooth.argmax(dim='x')
     centers_nm = smooth['x'][centers_px]
 
+    # Calculate (positive) sum
+    summed = smooth.where(smooth > 0).sum(dim='x')
+
     # Create new dataset
     data_vars = {
                  #'snr': (['ty', 'tx'], snr.data),
                  'peaks': (['ty', 'tx'], peaks.data),
                  'peakCenters': (['ty', 'tx'], centers_nm.data),
+                 'sum': (['ty', 'tx'], summed.data),
                  }
     coords = {
               't': (['ty', 'tx'], spectra.t.data),
