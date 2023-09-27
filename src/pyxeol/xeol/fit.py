@@ -39,7 +39,9 @@ def process_stack_dask(
                        fit=True,
                        fit_mode='gauss1',
                        wl_crop=None,
-                       rolling=None
+                       rolling=None,
+                       usic=None,
+                       dwell=None
                        ):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
@@ -67,7 +69,7 @@ def process_stack_dask(
         print(f'[0/{steps}] Initiating...')
         if load:
             _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop)
-        _pipeline_specfit(zfp, steps, fit_mode, rolling)
+        _pipeline_specfit(zfp, steps, fit_mode, rolling, usic, dwell)
     else:
         steps = 3
         print(f'[0/{steps}] Initiating...')
@@ -292,7 +294,7 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
     return
 
 
-def _pipeline_specfit(zfp, steps, fit_mode='gauss1', rolling=None):
+def _pipeline_specfit(zfp, steps, fit_mode, rolling, usic, dwell):
     _clear_stdout(1)
 
     # Load in the processed spectra data
@@ -306,6 +308,14 @@ def _pipeline_specfit(zfp, steps, fit_mode='gauss1', rolling=None):
     # Rolling window average (if requested)
     if rolling is not None:
         xeol['data'] = xeol['data'].rolling({'x': rolling}).mean()
+
+    # Scale by usic
+    if usic is not None:
+        xeol['data'] = xeol['data'] / usic.data.flatten()[:, np.newaxis]
+
+    # Scale by dwell time
+    if dwell is not None:
+        xeol['data'] = xeol['data'] / dwell
 
     # Gaussian parameter estimates and bounds using a random sample of the data
     numPts = xeol['t'].shape[0]
@@ -366,7 +376,7 @@ def _pipeline_specfit(zfp, steps, fit_mode='gauss1', rolling=None):
                              p0=p0,
                              bounds=bounds,
                              kwargs={'jac': use_df},
-                             allow_failures=True
+                             errors='ignore',
                              )
 
     # Extract parameters
