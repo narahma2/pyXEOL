@@ -25,7 +25,7 @@ def map_fit(zfp, fast_dim, slow_dim, fit_mode='gauss1'):
                   for i, key in enumerate(varNames)
                   }
     data_vars2 = {
-                  key: (['ty', 'tx'], err[:,:,i].data)
+                  f'err_{key}': (['ty', 'tx'], err[:,:,i].data)
                   for i, key in enumerate(varNames)
                   }
     data_vars3 = {
@@ -36,14 +36,13 @@ def map_fit(zfp, fast_dim, slow_dim, fit_mode='gauss1'):
               't': (['ty', 'tx'], params.t.data),
               'tx': params.t.tx, 'ty': params.t.ty
               }
-    out1 = xr.Dataset(data_vars=data_vars1, coords=coords)
-    out2 = xr.Dataset(data_vars=data_vars2, coords=coords)
-    out3 = xr.Dataset(data_vars=data_vars3, coords=coords)
+    data_vars = data_vars1
+    data_vars.update(data_vars2)
+    data_vars.update(data_vars3)
+    out = xr.Dataset(data_vars=data_vars, coords=coords)
 
     # Save output
-    out1.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_{fit_mode}')
-    out2.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_err_{fit_mode}')
-    out3.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_gof_{fit_mode}')
+    out.to_zarr(zfp, mode='w', group=f'maps/xeol/fit_{fit_mode}')
 
     return
 
