@@ -10,14 +10,19 @@ from dask import array as da
 from dask.diagnostics import ProgressBar
 from dask_image.imread import imread
 from glob import glob
+from importlib import resources as impresources
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
+from pandas import read_excel
+from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from shutil import rmtree
 from skimage.restoration import estimate_sigma
 from sklearn.metrics import r2_score
 
+from pyxeol.misc import create_folder
+from pyxeol import resources
 from pyxeol.specfun import (
                             baseline_arPLS,
                             df,
@@ -28,20 +33,24 @@ from pyxeol.specfun import (
                             gauss_p0_stack,
                             sigma2fwhm,
                             )
-from pyxeol.misc import create_folder
 
 
 def process_stack_dask(
                        in_fld,
-                       wavelengths,
+                       wvl,
                        zfp,
                        load=True,
                        fit=True,
                        fit_mode='gauss1',
-                       wl_crop=None,
+                       wvl_crop=None,
                        rolling=None,
                        usic=None,
-                       dwell=None
+                       dwell=None,
+                       optics={
+                               'Collection': 'Mitutoyo-20X',
+                               'Grating': 'HoribaGrating-600',
+                               'Detector': 'Newton-970BVF'
+                               }
                        ):
     # Load in files and sort (just in case)
     fn = glob(f'{in_fld}/*')
@@ -68,26 +77,27 @@ def process_stack_dask(
 
         print(f'[0/{steps}] Initiating...')
         if load:
-            _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop)
+            _pipeline_image2spec(fn, im, zfp, wvl, steps, wvl_crop, optics)
         _pipeline_specfit(zfp, steps, fit_mode, rolling, usic, dwell)
     else:
         steps = 3
         print(f'[0/{steps}] Initiating...')
         if load:
-            _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop)
+            _pipeline_image2spec(fn, im, zfp, wvl, steps, wvl_crop, optics)
             _clear_stdout(2)
 
     _update_stdout(f'{in_fld.split("/")[-1]} finished!')
 
     return 1
 
+from pandas import read_excel
 
 def process_single(
                    fp,
                    wavelengths,
                    x=None,
                    bg_corr=False,
-                   wl_crop=None,
+                   wvl_crop=None,
                    fit_mode='gauss1',
                    plot=True,
                    figsize=None
@@ -103,8 +113,8 @@ def process_single(
         raw2D = raw2D[x,:,:].squeeze()
 
     # Crop down images
-    if wl_crop is not None:
-        raw2D = raw2D[:,wl_crop:-wl_crop]
+    if wvl_crop is not None:
+        raw2D = raw2D[:,wvl_crop:-wvl_crop]
 
     # Baseline (scalar subtraction)
     bl = np.median(raw2D[:100,:100])
@@ -223,7 +233,7 @@ def process_single(
     return (status, pFit)
 
 
-def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
+def _pipeline_image2spec(fn, im, zfp, wvl, steps, wvl_crop, optics):
     # Load images or netCDF4 files
     _update_stdout(f'[1/{steps}] Loading images...')
     if im is not None:
@@ -241,8 +251,8 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
         raw = raw.rechunk((1, -1, -1))
 
     # Crop down images
-    if wl_crop is not None:
-        raw = raw[:,:,wl_crop:-wl_crop]
+    if wvl_crop is not None:
+        raw = raw[:,:,wvl_crop:-wvl_crop]
 
     # Baseline (scalar subtraction)
     bl = da.median(raw[:,::5,-100:], axis=(1,2))
@@ -261,6 +271,86 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
     bg = da.array(bg).mean(axis=0)
     ds = raw - bg
 
+    # Apply optical element efficiency corrections
+    sens_fp = (impresources.files(resources) / 'spectral_sensitivity.xlsx')
+
+    # Detector efficiency
+    sens_det = read_excel(
+                          sens_fp,
+                          sheet_name=optics['Detector'],
+                          skiprows=1,
+                          names=['nm', '%']
+                          )
+    sens_det = interp1d(
+                        sens_det['nm'],
+                        sens_det['%'],
+                        bounds_error=False,
+                        fill_value='extrapolate'
+                        )(wvl)/100
+
+    # Grating efficiency
+    if optics['Grating'] == 'HoribaGrating-300':
+        sens_gr = read_excel(
+                             sens_fp,
+                             sheet_name=optics['Grating'],
+                             skiprows=1,
+                             names=['nm', '%']
+                             )
+        sens_gr = interp1d(
+                           sens_gr['nm'],
+                           sens_gr['%'],
+                           bounds_error=False,
+                           fill_value='extrapolate'
+                           )(wvl)/100
+    else:
+        sens_gr_TE = read_excel(
+                                sens_fp,
+                                sheet_name=optics['Grating'],
+                                skiprows=1,
+                                usecols=[0,1],
+                                names=['nm', '%']
+                                )
+        sens_gr_TE = interp1d(
+                              sens_gr_TE['nm'],
+                              sens_gr_TE['%'],
+                              bounds_error=False,
+                              fill_value='extrapolate'
+                              )(wvl)/100
+        sens_gr_TM = read_excel(
+                                sens_fp,
+                                sheet_name=optics['Grating'],
+                                skiprows=1,
+                                usecols=[3,4],
+                                names=['nm', '%']
+                                )
+        sens_gr_TM = interp1d(
+                              sens_gr_TM['nm'],
+                              sens_gr_TM['%'],
+                              bounds_error=False,
+                              fill_value='extrapolate'
+                              )(wvl)/100
+        sens_gr = np.mean((sens_gr_TE, sens_gr_TM), axis=0)
+
+    # Collection optic efficiency
+    sens_col = read_excel(
+                          sens_fp,
+                          sheet_name=optics['Collection'],
+                          skiprows=1,
+                          names=['nm', '%']
+                          )
+    sens_col = interp1d(
+                        sens_col['nm'],
+                        sens_col['%'],
+                        bounds_error=False,
+                        fill_value='extrapolate'
+                        )(wvl)/100
+
+    # Overall setup efficiency
+    sens = sens_det * sens_gr * sens_col
+
+    # Corrected spectra
+    corr = ds / sens
+
     # Save output
     _update_stdout(f'[3/{steps}] Saving processed images...')
     folder = os.path.dirname(fn[0])
@@ -271,16 +361,18 @@ def _pipeline_image2spec(fn, im, zfp, wavelengths, steps, wl_crop):
                  'xeol_folder': folder,
                  'xeol_fname': names,
                  'bg': (['x'], bg),
-                 'data': (['t', 'x'], ds),
+                 'raw': (['t', 'x'], ds),
+                 'data': (['t', 'x'], corr),
                  }
-    coords = dict(x=wavelengths, t=t)
+    coords = dict(x=wvl, t=t)
     out = xr.Dataset(data_vars=data_vars, coords=coords)
 
     # Add in variable attributes
     out['xeol_folder'].attrs['label'] = 'Input folder'
     out['xeol_fname'].attrs['label'] = 'Input file names'
     out['bg'].attrs['label'] = 'Vector background'
-    out['data'].attrs['label'] = 'Measured data'
+    out['raw'].attrs['label'] = 'Measured data'
+    out['data'].attrs['label'] = 'Efficiency corrected data'
 
     # Add in coordinate attributes
     out['x'].attrs['label'] = 'Wavelength'
