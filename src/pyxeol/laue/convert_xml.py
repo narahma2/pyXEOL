@@ -23,6 +23,7 @@ def process_single(xml_fp, zfp):
     data_vars = {
                  'laue_folder': sampleInfo['folder'],
                  'laue_fname': (['t'], sampleInfo['names']),
+                 'scanNum': sampleInfo['scanNum'],
                  'oriMat': (['t', 'rows', 'cols'], sampleInfo['orientation']),
                  'oriXYZ': (['mdir', 't'], sampleInfo['anglesXYZ']),
                  'oriXHF': (['sdir', 't'], sampleInfo['anglesXHF']),
@@ -273,6 +274,9 @@ def _process(fp):
     # Number of positions
     npos = len(root)
 
+    # Scan number (should all be the same!)
+    scanNum = int(_getField(root[0], 'scanNum', 'value')[0])
+
     # File names
     # Sometimes if there are no points the image name isn't saved...so I am
     # building this up manually
@@ -369,6 +373,7 @@ def _process(fp):
     sampleInfo = {
                   'folder': folder,
                   'names': names,
+                  'scanNum': scanNum,
                   'sampleX': sample_x,
                   'sampleY': sample_y,
                   'sampleZ': sample_z,
