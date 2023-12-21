@@ -24,8 +24,12 @@ def _load_xrf_2idd(h50_fp, elements, quant=None):
 
     # Load h5 file
     with h5py.File(h50_fp, 'r') as hf:
+        # Fit type to use
+        use_type = 'MAPS/XRF_Analyzed/NNLS'
+
         # Channel names
-        channels = hf['MAPS/channel_names'][()].astype('U13')
+        path = f'{use_type}/Channel_Names'
+        channels = hf[path][()].astype('U13')
 
         # Strip out the edges
         channels = np.array([x.split('_')[0] for x in channels])
@@ -36,7 +40,7 @@ def _load_xrf_2idd(h50_fp, elements, quant=None):
         elements = np.array(elements)[order].tolist()
 
         # Load XRF data
-        xrf_all = hf['MAPS/XRF_fits']
+        xrf_all = hf[f'{use_type}/Counts_Per_Sec']
 
         # Check that a full 2D array was scanned
         if (xrf_all.shape[0] > 1) and (xrf_all.shape[1] > 1):

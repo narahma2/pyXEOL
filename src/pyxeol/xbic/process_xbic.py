@@ -8,11 +8,11 @@ from glob import glob
 def process(inp, zfp, sens=None, beamline='2idd'):
     # Retrieve XBIC data
     if beamline == '2idd':
-        xbic = _load_xbic_2idd(inp, sens=sens)
+        usic, xbic = _load_xbic_2idd(inp, sens=sens)
 
     # Output data as a 2D map
     if xbic is not None:
-        _map_xbic(zfp, xbic)
+        _map_xbic(zfp, usic, xbic)
 
     return
 
@@ -22,32 +22,30 @@ def _load_xbic_2idd(h50_fp, sens=None):
     with h5py.File(h50_fp, 'r') as hf:
         # Check if XBIC was done, otherwise skip
         try:
-            scalers = hf['MAPS/scaler_names'][()].astype('U13')
+            scalers = hf['MAPS/Scalers/Names'][()].astype('U13')
         except:
             return None
 
-        # Get the upstream/downstream
+        # Get the upstream/downstream ion chamber readout
         usic_ind = np.where(scalers == 'US_IC')[0]
         dsic_ind = np.where(scalers == 'DS_IC')[0]
-        dsic = hf['MAPS/scalers'][dsic_ind][()]
-        usic = hf['MAPS/scalers'][usic_ind][()]
+        dsic = hf['MAPS/Scalers/Values'][dsic_ind][0][:,:-2].squeeze()
+        usic = hf['MAPS/Scalers/Values'][usic_ind][0][:,:-2].squeeze()
 
         # Calculate XBIC and crop out the last two columns
         xbic = np.divide(dsic, usic, out=np.zeros_like(usic), where=usic!=0)
-        xbic = xbic.squeeze()[:,:-2]
+        xbic = xbic.squeeze()
 
-    return xbic
+    return usic, xbic
 
 
-def _map_xbic(zfp, xbic):
-    # Check if XEOL maps exist to verify shape
-    maps_zfp = glob(f'{zfp}/maps/**/*')
+def _map_xbic(zfp, usic, xbic):
+    # Check if scalars exist to verify shape
+    scalars = glob(f'{zfp}/scalars')
 
-    if len(maps_zfp):
-        store = maps_zfp[0].split('/maps')[0]
-        group = maps_zfp[0].split('.zarr/')[1]
-        zs = xr.open_zarr(store, group=group)
-        shape = [zs[x].shape for x in zs.keys()][0]
+    if len(scalars):
+        zs = xr.open_zarr(zfp, group='scalars')
+        shape = zs.t.shape
         t = zs.t.data
         tx = zs.tx.data
         ty = zs.ty.data
@@ -61,7 +59,8 @@ def _map_xbic(zfp, xbic):
 
     # Create new dataset
     data_vars = {
-                 f'xbic': (['ty', 'tx'], xbic),
+                 f'usic': (['ty', 'tx'], usic),
+                 f'xbic': (['ty', 'tx'], xbic)
                  }
     coords = {
               't': (['ty', 'tx'], t),
