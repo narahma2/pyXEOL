@@ -23,14 +23,18 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 
 
-# Peaks for the HG-2 calibration light source
-hg2_peaks = np.array([
-                      253.652, 296.728, 302.150, 313.155, 334.148, 365.015,
-                      404.656, 407.783, 435.833, 546.074, 576.960, 579.066,
-                      696.543, 706.722, 714.704, 727.294, 738.398, 750.387,
-                      763.511, 772.376, 794.818, 800.616, 811.531, 826.452,
-                      842.465, 852.144, 866.794, 912.297, 922.450
-                      ])
+def _get_ref_peaks():
+    # Peaks for the HG-2 calibration light source
+    # Taken from the HG-2 manual
+    hg2_peaks = np.array([
+                          253.652, 296.728, 302.150, 313.155, 334.148, 365.015,
+                          404.656, 407.783, 435.833, 546.074, 576.960, 579.066,
+                          696.543, 706.722, 714.704, 727.294, 738.398, 750.387,
+                          763.511, 772.376, 794.818, 800.616, 811.531, 826.452,
+                          842.465, 852.144, 866.794, 912.297, 922.450
+                          ])
+
+    return hg2_peaks
 
 
 def _fit_linear(peaks_px, position, grating=600, detector='newton971'):
@@ -70,6 +74,9 @@ def _remove_outlier_peaks(peaks, positions, winSize, threshold):
 
     # Initialize peaks list (w/o redundancies)
     use_peaks = [None] * len(peaks)
+
+    # Get reference peak values
+    hg2_peaks = _get_ref_peaks()
 
     # Remove redundancies
     for j in train_inds:
@@ -143,7 +150,7 @@ def _find_set(peaks, refs):
     return closest_peaks
 
 
-def _process(fp, lines, positions, prom, thresholds, grating, detector):
+def _process(fp, lines, positions, minPks, prom, thresh, grating, detector):
     # Get peak pixel positions from each data set
     peaks, _ = zip(*[
                      find_peaks(x, distance=10, prominence=prom)
@@ -154,7 +161,7 @@ def _process(fp, lines, positions, prom, thresholds, grating, detector):
     winSize = 300
 
     # Crop down the peak list to remove any outliers
-    use_peaks = _remove_outlier_peaks(peaks, positions, winSize, thresholds[0])
+    use_peaks = _remove_outlier_peaks(peaks, positions, winSize, thresh[0])
 
     # Number of peaks found
     npeaks = [len(x) for x in use_peaks]
@@ -170,10 +177,13 @@ def _process(fp, lines, positions, prom, thresholds, grating, detector):
     # Indices of training data sets (used for removing bad fits)
     keep_set = np.arange(0, nsets, 1).tolist()
 
+    # Get reference peak values
+    hg2_peaks = _get_ref_peaks()
+
     for j in train_inds:
         # Make sure there are enough peaks
-        if npeaks[j] < 5:
-            print(f'{fp[j].split("/")[-1]} thrown out (less than 5 peaks)')
+        if npeaks[j] < minPks:
+            print(f'{fp[j].split("/")[-1]} thrown out (<{minPks} peaks)')
             keep_set.remove(j)
             continue
 
@@ -194,7 +204,7 @@ def _process(fp, lines, positions, prom, thresholds, grating, detector):
         for combo in itertools.combinations(ref_peaks, npeaks[j]):
             err, z = _train_err(use_peaks[j], combo)
 
-            if err < thresholds[1]:
+            if err < thresh[1]:
                 poly.append(z)
                 train_ref.append(combo)
 
@@ -265,6 +275,9 @@ def _process(fp, lines, positions, prom, thresholds, grating, detector):
 def _plot_calib(calib, lines):
     # Number of datasets
     nsets = len(calib['Position'])
+
+    # Get reference peak values
+    hg2_peaks = _get_ref_peaks()
 
     # Colors
     cdata = 'black'
@@ -390,7 +403,8 @@ def autocalibrate(
                   fp,
                   lines,
                   positions,
-                  prom=500,
+                  minPeaks=5,
+                  prominence=500,
                   thresholds=(0.1, 5),
                   save_fld=None,
                   save_name='xeol_calibration',
@@ -407,7 +421,8 @@ def autocalibrate(
                             fp,
                             lines,
                             positions,
-                            prom,
+                            minPeaks,
+                            prominence,
                             thresholds,
                             grating,
                             detector
