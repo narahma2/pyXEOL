@@ -442,6 +442,59 @@ def autocalibrate(
     return calib
 
 
+def manual_calibration(
+                       fp,
+                       lines,
+                       positions,
+                       peaks_nm,
+                       peaks_px,
+                       save_fld=None,
+                       save_name='xeol_calibration',
+                       plot=False,
+                       grating=600,
+                       detector='newton971'
+                       ):
+    # Fit each of the set of peaks
+    ndim = np.ndim(np.array(peaks_nm, dtype=object))
+
+    if ndim == 1:
+        err, z = _train_err(peaks_px, peaks_nm)
+
+        # Convert to list (of lists) for consistency later on
+        err = [err]
+        z = [z]
+    else:
+        err, z = zip(*[_train_err(x, y) for px, nm in zip(peaks_nm, peaks_px)])
+
+    # Package output
+    calib = {
+             'File': fp,
+             'Position': position,
+             'Peaks/px': peaks_px,
+             'Reference/nm': peaks_nm,
+             'polyfit': z,
+             'xval/nm': [np.polyval(coeff, np.arange(1600)) for coeff in z],
+             'RMSE': err,
+             'Grating': grating,
+             'Detector': detector
+             }
+
+    # Save data (make sure output directory exists!)
+    if save_fld is not None:
+        if os.path.isdir(save_fld):
+            _save(calib, save_fld, save_name)
+        else:
+            print(f'Create {save_fld} and then re-run this!')
+
+    # Visualize calibration
+    if plot:
+        _plot_calib(calib, lines)
+
+    return calib
+
+
+
+
 def apply_calibration(calib_fp, position):
     # Load in calibration data
     with open(calib_fp, 'r') as handle:
