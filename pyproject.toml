@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyxeol"
-version = "1.4.2"
+version = "1.4.3"
 description = "XEOL analysis package"
 authors = ["Naveed Rahman <naveed@anl.gov>"]
 readme = "README.md"

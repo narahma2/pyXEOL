@@ -23,6 +23,15 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 
 
+class NumpyEncoder(json.JSONEncoder):
+# Class for correctly saving numpy.ndarray in JSON files
+# https://stackoverflow.com/a/47626762
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
+
+
 def _get_ref_peaks():
     # Peaks for the HG-2 calibration light source
     # Taken from the HG-2 manual
@@ -394,7 +403,7 @@ def _plot_calib(calib, lines):
 
 def _save(calib, save_fld, save_name):
     with open(f'{save_fld}/{save_name}.json', 'w') as handle:
-        json.dump(calib, handle, indent=4)
+        json.dump(calib, handle, indent=4, cls=NumpyEncoder)
 
     return
 
@@ -461,7 +470,6 @@ def manual_calibration(
         err, z = _train_err(peaks_px, peaks_nm)
 
         # Convert to list (of lists) for consistency later on
-        positions = [positions]
         peaks_nm = [peaks_nm]
         peaks_px = [peaks_px]
         err = [err]
@@ -475,12 +483,12 @@ def manual_calibration(
     # Package output
     calib = {
              'File': fp,
-             'Position': [x.tolist() for x in positions],
-             'Peaks/px': [x.tolist() for x in peaks_px],
-             'Reference/nm': [x.tolist() for x in peaks_nm],
-             'polyfit': [x.tolist() for x in z],
-             'xval/nm': [x.tolist() for x in xval_nm],
-             'RMSE': [x.tolist() for x in err],
+             'Position': positions,
+             'Peaks/px': peaks_px,
+             'Reference/nm': peaks_nm,
+             'polyfit': z,
+             'xval/nm': xval_nm,
+             'RMSE': err,
              'Grating': grating,
              'Detector': detector
              }
