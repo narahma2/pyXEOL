@@ -461,20 +461,26 @@ def manual_calibration(
         err, z = _train_err(peaks_px, peaks_nm)
 
         # Convert to list (of lists) for consistency later on
+        positions = [positions]
+        peaks_nm = [peaks_nm]
+        peaks_px = [peaks_px]
         err = [err]
         z = [z]
     else:
         err, z = zip(*[_train_err(x, y) for px, nm in zip(peaks_nm, peaks_px)])
 
+    # X-axis wavelength values
+    xval_nm = [np.polyval(coeff, np.arange(0, 1600, 1)) for coeff in z]
+
     # Package output
     calib = {
              'File': fp,
-             'Position': positions,
-             'Peaks/px': peaks_px,
-             'Reference/nm': peaks_nm,
-             'polyfit': z,
-             'xval/nm': [np.polyval(coeff, np.arange(1600)) for coeff in z],
-             'RMSE': err,
+             'Position': [x.tolist() for x in positions],
+             'Peaks/px': [x.tolist() for x in peaks_px],
+             'Reference/nm': [x.tolist() for x in peaks_nm],
+             'polyfit': [x.tolist() for x in z],
+             'xval/nm': [x.tolist() for x in xval_nm],
+             'RMSE': [x.tolist() for x in err],
              'Grating': grating,
              'Detector': detector
              }
@@ -491,8 +497,6 @@ def manual_calibration(
         _plot_calib(calib, lines)
 
     return calib
-
-
 
 
 def apply_calibration(calib_fp, position):
