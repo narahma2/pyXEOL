@@ -469,7 +469,7 @@ def manual_calibration(
     # Package output
     calib = {
              'File': fp,
-             'Position': position,
+             'Position': positions,
              'Peaks/px': peaks_px,
              'Reference/nm': peaks_nm,
              'polyfit': z,
