@@ -27,6 +27,7 @@ def process_single(xml_fp, zfp):
                  'oriMat': (['t', 'rows', 'cols'], sampleInfo['orientation']),
                  'oriXYZ': (['mdir', 't'], sampleInfo['anglesXYZ']),
                  'oriXHF': (['sdir', 't'], sampleInfo['anglesXHF']),
+                 'fwhm': (['t'], sampleInfo['fwhm']),
                  'hkl_float': (['t', 'miller'], sampleInfo['hkl_float']),
                  'hkl_int': (['t', 'miller'], sampleInfo['hkl_int']),
                  'pos_x': (['t'], sampleInfo['sampleX']),
@@ -46,6 +47,8 @@ def process_single(xml_fp, zfp):
     out['oriXYZ'].attrs['units'] = 'rad'
     out['oriXHF'].attrs['label'] = 'Orientation angles in XHF'
     out['oriXHF'].attrs['units'] = 'rad'
+    out['fwhm'].attrs['label'] = 'Mean FWHM of all the used peaks'
+    out['fwhm'].attrs['units'] = 'pixels'
     out['hkl_float'].attrs['label'] = 'Raw HKL values for sample normal'
     out['hkl_int'].attrs['label'] = 'Closest HKL integers for sample normal'
     out['pos_x'].attrs['label'] = 'Sample X position'
@@ -304,6 +307,7 @@ def _process(fp):
     hkl_float = np.nan * np.zeros((npos, 3), dtype=np.float32)
     hkl_sym = np.nan * np.zeros((npos, 3), dtype=np.float32)
     hkl_int = np.nan * np.zeros((npos, 3), dtype=np.float32)
+    fwhm = np.nan * np.zeros((npos,), dtype=np.float32)
 
     # Populate the hkl direction of the sample normal per point
     normal = np.array([[0],[1],[-1]])
@@ -317,6 +321,27 @@ def _process(fp):
         except:
             continue
 
+        # Detector key
+        det_key = _getField(root, 'detector', 'tag')[0]
+
+        # PeaksXY key
+        peaks_key = _getField(root, 'peaksXY', 'tag')[0]
+
+        # Get the HWHM values in X and Y
+        hwhmX = _getChildren(step.find(det_key), peaks_key, 'hwhmX')[0]
+        fwhmX = 2*np.array([x for x in hwhmX])
+        hwhmY = _getChildren(step.find(det_key), peaks_key, 'hwhmY')[0]
+        fwhmY = 2*np.array([x for x in hwhmY])
+
+        # Peaks used in the first pattern (don't need the rest)
+        pkIndex = _getChildren(step, ind_key[i], 'PkIndex')
+        pkIndex0 = np.array(list(pkIndex[0]), dtype=int)
+
+        # Calculate FWHM of the used peaks
+        fwhmX_pattern = fwhmX[pkIndex0]
+        fwhmY_pattern = fwhmY[pkIndex0]
+        fwhm[i] = np.mean(np.sqrt(fwhmX_pattern**2 + fwhmY_pattern**2))
+
         # astar/bstar/cstar
         astar = _getChildren(step, ind_key[i], 'astar')
         bstar = _getChildren(step, ind_key[i], 'bstar')
@@ -329,6 +354,7 @@ def _process(fp):
                 ]
 
         # Calculate hkl direction of the sample normal
+        # Only using the first pattern
         hkl = normalize(np.linalg.inv(A[i][0]) @ normal, axis=0)
         hkl_float[i] = hkl.flatten()
 
@@ -380,6 +406,7 @@ def _process(fp):
                   'sampleH': sample_h,
                   'sampleF': sample_f,
                   'orientation': rot,
+                  'fwhm': fwhm,
                   'hkl_float': hkl_float,
                   'hkl_int': hkl_int,
                   'anglesXYZ': np.array((RX, RY, RZ)),
@@ -390,9 +417,9 @@ def _process(fp):
 
 
 def _test():
-    git_fld = '/mnt/c/Users/naveed/Documents/GitHub/xsd_mic'
-    laue_fld = f'{git_fld}/experiments/2023c1/34IDE/Laue/'
-    xml_fp = glob(f'{laue_fld}/recon2D*.xml')
+    data_fld = '/mnt/d/xsd_mic/data'
+    laue_fld = f'{data_fld}/2022-3/34IDE/Laue/recon/HAs_Long'
+    xml_fp = glob(f'{laue_fld}/*.xml')
     sampleInfo = _process(xml_fp[0])
 
     return sampleInfo
