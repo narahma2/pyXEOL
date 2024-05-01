@@ -1,3 +1,4 @@
 from pyxeol.laue import (
-                         convert_xml
+                         convert_xml,
+                         csl_types
                          )
