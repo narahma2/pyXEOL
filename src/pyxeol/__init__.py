@@ -5,6 +5,7 @@ from pyxeol import misc
 from pyxeol import readMDA
 from pyxeol import scanInfo
 from pyxeol import specfun
+from pyxeol import storage
 from pyxeol import xbic
 from pyxeol import xeol
 from pyxeol import xrf
